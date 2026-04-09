@@ -69,38 +69,71 @@ def save_portfolio(quantity: float, avg_price: float):
 
 
 # ── Données marché ────────────────────────────────────────────────────────────
+#
+# On récupère 400 jours d'historique pour 7 actifs via yfinance (gratuit).
+# Chaque actif a un ticker principal + un fallback en cas d'échec.
+#
+# Actifs récupérés :
+#   XAG_USD  → argent spot en USD       (ticker : XAGUSD=X  / SI=F futures)
+#   EUR_USD  → taux de change EUR/USD   (ticker : EURUSD=X  / EUR=X)
+#   XAU_USD  → or spot en USD           (ticker : XAUUSD=X  / GC=F futures)
+#   SPY      → ETF S&P 500 en USD       (ticker : SPY)
+#   GLD      → ETF Or en USD            (ticker : GLD — utilisé pour RS vs XAG)
+#   TLT      → ETF obligations 20+ ans  (ticker : TLT)
+#   DXY      → indice Dollar US         (ticker : DX-Y.NYB  / DX=F)
 
 @st.cache_data(ttl=3600)
 def get_data():
     TICKERS = {
         "XAG_USD": ["XAGUSD=X", "SI=F"],
-        "EUR_USD": ["EURUSD=X", "EUR=X"],
-        "XAU_USD": ["XAUUSD=X", "GC=F"],
+        "EUR_USD":  ["EURUSD=X", "EUR=X"],
+        "XAU_USD":  ["XAUUSD=X", "GC=F"],
+        "SPY":      ["SPY"],           # S&P 500 ETF (USD)
+        "GLD":      ["GLD"],           # Gold ETF (USD) — pour force relative vs XAG
+        "TLT":      ["TLT"],           # Obligations long terme (USD)
+        "DXY":      ["DX-Y.NYB", "DX=F"],  # Dollar Index
     }
 
     def fetch_close(candidates):
+        """Essaie chaque ticker de la liste jusqu'à obtenir des données valides."""
         for ticker in candidates:
             try:
                 hist = yf.Ticker(ticker).history(period="400d")
                 if not hist.empty and "Close" in hist.columns and len(hist) > 30:
                     s = hist["Close"].copy()
+                    # Supprime le timezone pour éviter les conflits de merge
                     s.index = s.index.tz_localize(None)
                     return s
             except Exception:
                 continue
-        return pd.Series(dtype=float)
+        return pd.Series(dtype=float, name=candidates[0])
 
-    df = pd.DataFrame({
-        key: fetch_close(tickers)
-        for key, tickers in TICKERS.items()
-    }).dropna()
+    # Téléchargement parallèle de tous les actifs
+    raw = {key: fetch_close(tickers) for key, tickers in TICKERS.items()}
+
+    # On signale dans les logs quels tickers ont échoué
+    missing = [k for k, v in raw.items() if v.empty]
+    if missing:
+        st.warning(f"Données manquantes pour : {', '.join(missing)} — certains graphiques peuvent être incomplets.")
+
+    df = pd.DataFrame(raw)
+
+    # On supprime uniquement les colonnes critiques pour le calcul principal
+    critical = ["XAG_USD", "EUR_USD", "XAU_USD"]
+    df = df.dropna(subset=critical)
 
     if len(df) < 30:
         raise ValueError(f"Données insuffisantes ({len(df)} lignes) — réessaie dans quelques minutes.")
 
-    df["XAG_EUR"] = df["XAG_USD"] / df["EUR_USD"]
-    df["XAU_EUR"] = df["XAU_USD"] / df["EUR_USD"]
-    df["ratio"]   = df["XAU_EUR"] / df["XAG_EUR"]
+    # ── Conversions en EUR ──────────────────────────────────────────────────
+    df["XAG_EUR"] = df["XAG_USD"] / df["EUR_USD"]   # prix argent en €/oz
+    df["XAU_EUR"] = df["XAU_USD"] / df["EUR_USD"]   # prix or en €/oz
+
+    # ── Ratios de force relative (tous en USD pour comparabilité) ───────────
+    # Ratio or/argent : nombre d'oz d'argent pour acheter 1 oz d'or
+    # → plus il est élevé, plus l'argent est bon marché vs l'or
+    df["ratio_xau_xag"] = df["XAU_USD"] / df["XAG_USD"]
+
     return df
 
 
@@ -129,8 +162,8 @@ def compute_score(df):
     upper   = upper_v.iloc[-1]
     lower   = lower_v.iloc[-1]
     sma50   = df["XAG_EUR"].rolling(50).mean().iloc[-1]
-    ratio   = df["ratio"].iloc[-1]
-    ratio_m = df["ratio"].mean()
+    ratio   = df["ratio_xau_xag"].iloc[-1]
+    ratio_m = df["ratio_xau_xag"].mean()
     perf_1m = (price - df["XAG_EUR"].iloc[-22]) / df["XAG_EUR"].iloc[-22] * 100
 
     score   = 10
@@ -202,8 +235,25 @@ with st.spinner("Chargement des données marché..."):
 price      = df["XAG_EUR"].iloc[-1]
 prev_price = df["XAG_EUR"].iloc[-2]
 change_pct = (price - prev_price) / prev_price * 100
-ratio      = df["ratio"].iloc[-1]
+ratio      = df["ratio_xau_xag"].iloc[-1]
 rsi_now    = rsi(df["XAG_EUR"]).iloc[-1]
+
+# ── Statut des flux de données (debug discret) ────────────────────────────────
+with st.expander("📡 Statut des données marché", expanded=False):
+    status_cols = st.columns(5)
+    assets = {
+        "XAG (Argent)": "XAG_USD",
+        "SPY (S&P500)": "SPY",
+        "GLD (Or ETF)": "GLD",
+        "TLT (Oblig.)": "TLT",
+        "DXY (Dollar)": "DXY",
+    }
+    for col, (label, key) in zip(status_cols, assets.items()):
+        if key in df.columns and df[key].notna().sum() > 10:
+            last_val = df[key].iloc[-1]
+            col.metric(label, f"{last_val:.2f}", "✅ OK")
+        else:
+            col.metric(label, "—", "❌ Manquant")
 
 # ── Portefeuille ──────────────────────────────────────────────────────────────
 
@@ -301,13 +351,13 @@ st.subheader("📊 Ratio Or / Argent — 6 mois")
 st.caption("Un ratio élevé signifie que l'argent est bon marché vs l'or → signal d'achat supplémentaire")
 
 fig2 = go.Figure()
-fig2.add_hrect(y0=df["ratio"].quantile(0.75), y1=df["ratio"].max() + 5,
+fig2.add_hrect(y0=df["ratio_xau_xag"].quantile(0.75), y1=df["ratio_xau_xag"].max() + 5,
     fillcolor="rgba(0,200,0,0.07)", annotation_text="Zone favorable argent",
     annotation_position="top left")
-fig2.add_trace(go.Scatter(x=df_chart.index, y=df_chart["ratio"],
+fig2.add_trace(go.Scatter(x=df_chart.index, y=df_chart["ratio_xau_xag"],
     name="Ratio XAU/XAG", line=dict(color="gold", width=2)))
-fig2.add_hline(y=df["ratio"].mean(), line_dash="dash", line_color="white",
-    annotation_text=f"Moy. 1 an ({df['ratio'].mean():.1f})",
+fig2.add_hline(y=df["ratio_xau_xag"].mean(), line_dash="dash", line_color="white",
+    annotation_text=f"Moy. 1 an ({df['ratio_xau_xag'].mean():.1f})",
     annotation_position="bottom right")
 fig2.update_layout(height=280, template="plotly_dark",
     margin=dict(l=10, r=10, t=20, b=10), showlegend=False)
