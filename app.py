@@ -23,24 +23,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ── Authentification ──────────────────────────────────────────────────────────
-
-def check_auth():
-    if st.session_state.get("authenticated"):
-        return
-    st.title("🥈 XAG Advisor")
-    with st.form("login_form"):
-        pwd = st.text_input("Mot de passe", type="password", placeholder="••••••••")
-        submitted = st.form_submit_button("Connexion", use_container_width=True)
-        if submitted:
-            if pwd == st.secrets["APP_PASSWORD"]:
-                st.session_state.authenticated = True
-                st.rerun()
-            else:
-                st.error("Mot de passe incorrect")
-    st.stop()
-
-check_auth()
 
 
 # ── Portfolio GitHub ──────────────────────────────────────────────────────────
@@ -662,7 +644,7 @@ if qty > 0:
     current_val = qty * price
     invested    = qty * avg_price
     pnl         = current_val - invested
-    pnl_pct     = pnl / invested * 100
+    pnl_pct     = (pnl / invested * 100) if invested > 0 else 0.0
 
     st.subheader("💼 Mon portefeuille XAG")
     c1, c2, c3, c4 = st.columns(4)
