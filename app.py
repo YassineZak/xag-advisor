@@ -421,6 +421,139 @@ def compute_score(df: pd.DataFrame, ind: dict):
     return final_score, label, reasons, rsi_val
 
 
+# ── Conseil personnalisé ──────────────────────────────────────────────────────
+
+def generate_advice(score: int, label: str, ind: dict, df: pd.DataFrame) -> list[dict]:
+    """
+    Génère une liste de blocs de conseil en langage simple, basés sur les
+    indicateurs actuels. Chaque bloc a : type (info/success/warning/error),
+    titre, et texte.
+    """
+    advice = []
+    rs_spy  = ind.get("rs_spy")
+    rs_gld  = ind.get("rs_gld")
+    s30_xag = ind.get("sharpe_xag_30")
+    s30_spy = ind.get("sharpe_spy_30")
+    dxy_mom = ind.get("dxy_mom_1m")
+    price   = df["XAG_EUR"].iloc[-1]
+    ratio   = df["ratio_xau_xag"].iloc[-1]
+    ratio_m = df["ratio_xau_xag"].mean()
+
+    # ── Conseil principal selon le signal ───────────────────────────────────
+    if label == "ACHAT FORT":
+        advice.append({"type": "success", "titre": "Action recommandée : Acheter de l'XAG ce mois-ci",
+            "texte": (
+                "Les conditions sont très favorables pour renforcer ta position en argent métal. "
+                "Plusieurs indicateurs s'alignent en ta faveur : le prix est bas par rapport à ses moyennes historiques, "
+                "l'argent est sous-évalué et le momentum est positif. "
+                "C'est le type de moment où acheter régulièrement (même une petite somme) a du sens."
+            )})
+    elif label == "ACHETER":
+        advice.append({"type": "success", "titre": "Action recommandée : Envisager un achat ce mois-ci",
+            "texte": (
+                "Les conditions sont globalement favorables. Ce n'est pas le moment parfait mais c'est un "
+                "bon moment pour investir si tu avais prévu de le faire ce mois-ci. "
+                "Tu peux y aller avec une somme normale, sans surpondérer."
+            )})
+    elif label == "NEUTRE":
+        advice.append({"type": "warning", "titre": "Action recommandée : Attendre ou investir prudemment",
+            "texte": (
+                "Les signaux sont mitigés ce mois-ci — certains indicateurs sont positifs, d'autres négatifs. "
+                "Si tu pratiques le DCA (investissement régulier fixe chaque mois), tu peux maintenir "
+                "ta mise habituelle. Sinon, mieux vaut attendre un signal plus clair le mois prochain."
+            )})
+    elif label == "PRIVILÉGIER SPY":
+        advice.append({"type": "error", "titre": "Action recommandée : Pause sur XAG, regarder le S&P500",
+            "texte": (
+                "En ce moment, le marché actions (S&P500 via SPY) performe nettement mieux que l'argent. "
+                "Si tu as la possibilité d'investir dans un ETF S&P500 depuis Revolut, "
+                "c'est probablement le meilleur placement ce mois-ci. "
+                "Pas besoin de vendre ton XAG actuel — juste de ne pas en acheter davantage."
+            )})
+    else:  # ATTENDRE
+        advice.append({"type": "error", "titre": "Action recommandée : Ne pas acheter ce mois-ci",
+            "texte": (
+                "Les conditions ne sont pas réunies pour un achat ce mois-ci. "
+                "Le prix est élevé ou la tendance est défavorable. "
+                "Garde ta poudre sèche et reviens consulter le mois prochain. "
+                "Ton XAG existant n'est pas à vendre pour autant — juste ne pas en ajouter maintenant."
+            )})
+
+    # ── Conseil sur la comparaison XAG vs actifs ─────────────────────────────
+    if rs_spy is not None and rs_gld is not None:
+        best = "XAG (Argent)" if rs_spy > 1 and rs_gld > 1 else ("SPY (S&P500)" if rs_spy < rs_gld else "Or (GLD)")
+        if rs_spy > 1.05 and rs_gld > 1.05:
+            advice.append({"type": "info", "titre": "Comparaison actifs : L'argent domine en ce moment",
+                "texte": (
+                    f"Sur les 90 derniers jours, l'argent (XAG) surperforme à la fois le S&P500 (RS={rs_spy:.2f}) "
+                    f"et l'or (RS={rs_gld:.2f}). C'est un signal de momentum fort — l'argent est l'actif le plus "
+                    f"porteur en ce moment dans ton univers de comparaison."
+                )})
+        elif rs_spy < 0.90:
+            advice.append({"type": "info", "titre": "Comparaison actifs : Les actions font mieux que l'argent",
+                "texte": (
+                    f"Sur 90 jours, le S&P500 surperforme l'argent (RS XAG/SPY = {rs_spy:.2f}). "
+                    f"Si tu cherches à maximiser ton rendement à court terme, un ETF S&P500 serait plus performant. "
+                    f"L'argent reste un bon actif de diversification long terme, mais ce n'est pas son meilleur moment relatif."
+                )})
+        elif rs_gld < 0.92:
+            advice.append({"type": "info", "titre": "Comparaison actifs : L'or fait mieux que l'argent",
+                "texte": (
+                    f"Sur 90 jours, l'or (GLD) surperforme l'argent (RS XAG/GLD = {rs_gld:.2f}). "
+                    f"Si tu veux t'exposer aux métaux précieux, l'or est actuellement le métal le plus dynamique. "
+                    f"L'argent reste intéressant sur le long terme (ratio or/argent à {ratio:.0f})."
+                )})
+
+    # ── Conseil sur le Dollar ──────────────────────────────────────────────────
+    if dxy_mom is not None and not np.isnan(dxy_mom):
+        if dxy_mom > 2.0:
+            advice.append({"type": "warning", "titre": "Attention : Le dollar US se renforce",
+                "texte": (
+                    f"Le dollar américain a progressé de +{dxy_mom:.1f}% ce mois-ci (indice DXY). "
+                    f"Comme les métaux sont cotés en dollars, un dollar fort rend l'argent plus cher "
+                    f"pour les acheteurs mondiaux et tends à faire baisser les prix. "
+                    f"Ce contexte pèse sur l'XAG à court terme."
+                )})
+        elif dxy_mom < -2.0:
+            advice.append({"type": "info", "titre": "Contexte favorable : Le dollar US s'affaiblit",
+                "texte": (
+                    f"Le dollar a baissé de {dxy_mom:.1f}% ce mois-ci. "
+                    f"Un dollar faible est historiquement bon pour les métaux précieux : "
+                    f"ils deviennent moins chers en monnaie locale pour les acheteurs du monde entier, "
+                    f"ce qui stimule la demande et tend à faire monter les prix."
+                )})
+
+    # ── Conseil sur le ratio or/argent ────────────────────────────────────────
+    if ratio > ratio_m * 1.15:
+        advice.append({"type": "info", "titre": "Opportunité structurelle : Ratio or/argent très élevé",
+            "texte": (
+                f"Il faut actuellement {ratio:.0f} oz d'argent pour acheter 1 oz d'or "
+                f"(moyenne historique : {ratio_m:.0f} oz). "
+                f"Historiquement, quand ce ratio est très élevé, l'argent tend à rattraper l'or. "
+                f"C'est un argument de long terme en faveur de l'argent, indépendamment du signal mensuel."
+            )})
+
+    # ── Conseil sur le Sharpe ────────────────────────────────────────────────
+    if s30_xag is not None and s30_spy is not None and not (np.isnan(s30_xag) or np.isnan(s30_spy)):
+        if s30_xag > 1.5:
+            advice.append({"type": "info", "titre": "Qualité du rendement : Bon ratio risque/rendement pour l'XAG",
+                "texte": (
+                    f"Le Sharpe de l'XAG à 30 jours est de {s30_xag:.2f}. "
+                    f"Cela signifie que pour chaque unité de risque prise, tu obtiens un rendement positif solide. "
+                    f"Un Sharpe > 1 est considéré comme bon, > 2 est excellent."
+                )})
+        elif s30_xag < 0:
+            advice.append({"type": "warning", "titre": "Rendement récent décevant pour l'XAG",
+                "texte": (
+                    f"Le Sharpe XAG à 30 jours est négatif ({s30_xag:.2f}), ce qui signifie que "
+                    f"le rendement récent de l'argent n'a même pas compensé le risque pris. "
+                    f"C'est un signal de faiblesse à court terme — pas forcément durable, "
+                    f"mais à surveiller."
+                )})
+
+    return advice
+
+
 # ── Interface ─────────────────────────────────────────────────────────────────
 
 st.title("🥈 XAG/EUR — Advisor Mensuel")
@@ -483,9 +616,28 @@ if qty > 0:
 # ── Métriques marché ──────────────────────────────────────────────────────────
 
 col1, col2, col3 = st.columns(3)
-col1.metric("Prix XAG/EUR",    f"{price:.2f} €",  f"{change_pct:+.2f}%")
-col2.metric("Ratio Or/Argent", f"{ratio:.1f}",     help="Plus ce ratio est élevé, plus l'argent est bon marché vs l'or.")
-col3.metric("RSI 14j",         f"{rsi_now:.1f}",   help="<30 = survente (achat intéressant) | >70 = surachat (attendre)")
+col1.metric("Prix XAG/EUR", f"{price:.2f} €", f"{change_pct:+.2f}%",
+    help=(
+        "Prix actuel d'une once troy d'argent en euros. "
+        "1 once troy = 31,1 grammes. "
+        "La variation affichée est par rapport à la veille."
+    ))
+col2.metric("Ratio Or/Argent", f"{ratio:.1f}",
+    help=(
+        "Indique combien d'onces d'argent il faut pour acheter 1 once d'or. "
+        f"Actuellement {ratio:.0f} oz d'argent = 1 oz d'or. "
+        f"La moyenne historique est ~{df['ratio_xau_xag'].mean():.0f}. "
+        "Plus ce chiffre est élevé, plus l'argent est bon marché par rapport à l'or — "
+        "signal d'achat structurel."
+    ))
+col3.metric("RSI 14j", f"{rsi_now:.1f}",
+    help=(
+        "RSI = Relative Strength Index. Mesure si un actif est suracheté ou survendu. "
+        "Va de 0 à 100. "
+        "Sous 30 : l'argent a beaucoup baissé, les vendeurs s'épuisent → bon moment potentiel pour acheter. "
+        "Au-dessus de 70 : l'argent a beaucoup monté, les acheteurs s'essoufflent → mieux vaut attendre. "
+        "Entre 30 et 70 : zone neutre."
+    ))
 
 st.divider()
 
@@ -506,45 +658,76 @@ with col_sig:
     else:
         st.error(f"### 🔴 {label}\nScore : **{score} / 100**")
     st.progress(score / 100)
-    st.caption("Score basé sur 8 indicateurs techniques et fondamentaux")
+    st.caption("Score 0–100 basé sur 8 indicateurs. Au-dessus de 60 = conditions favorables à l'achat.")
 
 with col_why:
-    st.markdown("**Analyse détaillée :**")
+    st.markdown("**Analyse détaillée des 8 indicateurs :**")
     for icon, text in reasons:
         st.markdown(f"{icon} {text}")
 
 # ── Métriques avancées : Sharpe & Force Relative ──────────────────────────────
 st.divider()
 st.subheader("📐 Indicateurs avancés")
+st.caption(
+    "Ces indicateurs comparent l'argent à d'autres actifs pour savoir si c'est le meilleur placement en ce moment."
+)
 
 mc1, mc2, mc3, mc4, mc5 = st.columns(5)
 
-s30 = ind.get("sharpe_xag_30")
-s90 = ind.get("sharpe_xag_90")
+s30  = ind.get("sharpe_xag_30")
+s90  = ind.get("sharpe_xag_90")
 ss30 = ind.get("sharpe_spy_30")
 rs_spy = ind.get("rs_spy")
 rs_gld = ind.get("rs_gld")
 
-mc1.metric(
-    "Sharpe XAG 30j", f"{s30:.2f}" if s30 and not np.isnan(s30) else "—",
-    help="Rendement ajusté au risque sur 30 jours. >1 = bon, >2 = excellent, <0 = perte réelle"
-)
-mc2.metric(
-    "Sharpe XAG 90j", f"{s90:.2f}" if s90 and not np.isnan(s90) else "—",
-    help="Rendement ajusté au risque sur 90 jours"
-)
-mc3.metric(
-    "Sharpe SPY 30j", f"{ss30:.2f}" if ss30 and not np.isnan(ss30) else "—",
-    help="Sharpe du S&P500 sur 30 jours — référence de comparaison"
-)
-mc4.metric(
-    "RS XAG/SPY 90j", f"{rs_spy:.2f}" if rs_spy else "—",
-    help="Force Relative vs S&P500 sur 90j. >1 = XAG surperforme, <1 = SPY surperforme"
-)
-mc5.metric(
-    "RS XAG/Or 90j", f"{rs_gld:.2f}" if rs_gld else "—",
-    help="Force Relative vs Or sur 90j. >1 = Argent surperforme l'or"
-)
+mc1.metric("Sharpe XAG 30j", f"{s30:.2f}" if s30 and not np.isnan(s30) else "—",
+    help=(
+        "Le Ratio de Sharpe mesure le rendement obtenu par rapport au risque pris. "
+        "Calcul sur les 30 derniers jours. "
+        "Au-dessus de 1 = bon rendement pour le risque pris. "
+        "Au-dessus de 2 = excellent. "
+        "En dessous de 0 = l'argent a perdu de la valeur en termes réels."
+    ))
+mc2.metric("Sharpe XAG 90j", f"{s90:.2f}" if s90 and not np.isnan(s90) else "—",
+    help=(
+        "Même calcul que le Sharpe 30j mais sur 90 jours — vision moyen terme plus stable, "
+        "moins sensible aux fluctuations récentes."
+    ))
+mc3.metric("Sharpe SPY 30j", f"{ss30:.2f}" if ss30 and not np.isnan(ss30) else "—",
+    help=(
+        "Ratio de Sharpe du S&P500 (indice des 500 plus grandes entreprises américaines) sur 30 jours. "
+        "Sert de référence : si le Sharpe XAG est plus élevé, l'argent offre un meilleur rendement/risque "
+        "que les actions américaines en ce moment."
+    ))
+mc4.metric("RS XAG/SPY 90j", f"{rs_spy:.2f}" if rs_spy else "—",
+    help=(
+        "Force Relative de l'argent vs le S&P500 sur 90 jours. "
+        "Calcul : performance XAG / performance SPY, les deux ramenés à 1 au départ. "
+        "Au-dessus de 1 → l'argent a mieux performé que les actions sur 3 mois. "
+        "En dessous de 1 → les actions ont fait mieux."
+    ))
+mc5.metric("RS XAG/Or 90j", f"{rs_gld:.2f}" if rs_gld else "—",
+    help=(
+        "Force Relative de l'argent vs l'or sur 90 jours. "
+        "Au-dessus de 1 → l'argent a surperformé l'or. "
+        "En dessous de 1 → l'or a fait mieux que l'argent."
+    ))
+
+# ── Conseil du mois ───────────────────────────────────────────────────────────
+st.divider()
+st.subheader("🧭 Conseil du mois")
+st.caption("Analyse personnalisée basée sur l'ensemble des données actuelles — en langage simple.")
+
+advice_blocks = generate_advice(score, label, ind, df)
+for block in advice_blocks:
+    if block["type"] == "success":
+        st.success(f"**{block['titre']}**\n\n{block['texte']}")
+    elif block["type"] == "warning":
+        st.warning(f"**{block['titre']}**\n\n{block['texte']}")
+    elif block["type"] == "error":
+        st.error(f"**{block['titre']}**\n\n{block['texte']}")
+    else:
+        st.info(f"**{block['titre']}**\n\n{block['texte']}")
 
 st.divider()
 
@@ -628,6 +811,84 @@ with st.form("portfolio_form"):
             save_portfolio(new_qty, new_avg)
         st.success("Portefeuille mis à jour !")
         st.rerun()
+
+# ── Glossaire pédagogique ────────────────────────────────────────────────────
+
+st.divider()
+with st.expander("📖 Glossaire — comprendre les indicateurs"):
+    st.markdown("""
+### Les actifs suivis
+
+| Actif | Ce que c'est | Pourquoi on le suit |
+|---|---|---|
+| **XAG** | Argent métal (Silver). Coté en oz troy (1 oz = 31,1 g). | C'est l'actif que tu achètes sur Revolut. |
+| **SPY** | ETF qui réplique le S&P500, l'indice des 500 plus grandes entreprises américaines. | Référence du marché actions mondiale. On compare l'argent à ça. |
+| **GLD** | ETF adossé à l'or physique. | Permet de comparer argent vs or. |
+| **TLT** | ETF d'obligations US à 20+ ans. | Quand les taux montent, TLT baisse. Il reflète le contexte de taux. |
+| **DXY** | Indice Dollar US. Mesure la force du dollar face à un panier de devises (euro, yen...). | Un dollar fort fait baisser les métaux précieux. |
+
+---
+
+### Les indicateurs techniques
+
+**RSI (Relative Strength Index)**
+Mesure la vitesse et l'amplitude des variations de prix. Va de 0 à 100.
+- **< 30** : l'actif a trop baissé trop vite (survente) → les vendeurs s'épuisent → rebond probable → **signal d'achat**
+- **> 70** : l'actif a trop monté trop vite (surachat) → les acheteurs s'essoufflent → correction probable → **signal de vente ou d'attente**
+- **Entre 30 et 70** : zone neutre, ni chaud ni froid.
+
+**Bandes de Bollinger**
+Enveloppe autour du prix composée de 3 lignes : une moyenne mobile centrale (SMA20) et deux bandes à 2 écarts-types au-dessus et en dessous.
+- Le prix touche la **bande basse** → il est statistiquement bas → potentiel de rebond → **signal d'achat**
+- Le prix touche la **bande haute** → il est statistiquement haut → risque de correction → **signal de prudence**
+- 95% du temps le prix reste à l'intérieur des bandes.
+
+**SMA20 / SMA50 (Simple Moving Average)**
+Moyenne des 20 (ou 50) derniers jours de prix. Lisse les fluctuations et révèle la tendance.
+- Prix **sous** la SMA50 → tendance baissière → le prix est "en solde" par rapport à sa moyenne récente → **opportunité d'achat potentielle**
+- Prix **au-dessus** → tendance haussière → prix déjà élevé → **prudence**
+
+---
+
+### Les indicateurs avancés
+
+**Ratio Or/Argent**
+Nombre d'onces d'argent nécessaires pour acheter 1 once d'or.
+- Historiquement entre 40 et 120.
+- **Ratio élevé (ex: 90+)** : l'argent est bon marché par rapport à l'or → l'argent tend à rattraper → **opportunité long terme**
+- **Ratio bas (ex: 40)** : l'argent est cher par rapport à l'or → attention.
+
+**Force Relative (RS)**
+Compare la performance de l'argent à un autre actif sur une période donnée, en normalisant les deux à 1 au départ.
+- **RS > 1** : l'argent a fait mieux que l'actif de référence → momentum favorable à l'argent
+- **RS < 1** : l'autre actif a fait mieux → l'argent sous-performe en relatif
+
+**Ratio de Sharpe**
+Mesure le rendement obtenu par rapport au risque pris (la volatilité).
+`Sharpe = (Rendement moyen - Taux sans risque) / Volatilité × √252`
+- **> 1** : bon — tu es bien rémunéré pour le risque pris
+- **> 2** : excellent
+- **< 0** : mauvais — tu perds de l'argent en termes réels
+
+**Momentum DXY**
+Variation du Dollar Index sur 1 mois.
+- Les métaux sont cotés en dollars → **dollar fort = métal plus cher pour le monde = demande baisse = prix baisse**
+- **Dollar faible = métal moins cher pour le monde = demande monte = prix monte**
+
+---
+
+### Le score global (0–100)
+
+Agrège tous les indicateurs avec des pondérations :
+
+| Signal | Score | Signification |
+|---|---|---|
+| 💚 ACHAT FORT | ≥ 75 | Conditions très favorables, plusieurs signaux alignés |
+| 🟢 ACHETER | 60–74 | Conditions favorables |
+| 🟡 NEUTRE | 40–59 | Signaux mitigés, pas de conviction claire |
+| 🔴 ATTENDRE | 25–39 | Conditions défavorables |
+| 📈 PRIVILÉGIER SPY | < 25 + RS faible | Les actions dominent, mieux vaut ne pas acheter d'argent ce mois |
+""")
 
 # ── Pied de page ──────────────────────────────────────────────────────────────
 
