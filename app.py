@@ -25,27 +25,32 @@ st.markdown("""
 
 @st.cache_data(ttl=3600)
 def get_data():
-    end = datetime.today()
-    start = end - timedelta(days=400)
+    # Tickers principaux + secours pour chaque actif
+    TICKERS = {
+        "XAG_USD": ["XAGUSD=X", "SI=F"],
+        "EUR_USD": ["EURUSD=X", "EUR=X"],
+        "XAU_USD": ["XAUUSD=X", "GC=F"],
+    }
 
-    def fetch_close(ticker):
-        raw = yf.download(ticker, start=start, end=end, progress=False)
-        # yfinance >= 0.2.x retourne parfois un MultiIndex (Price, Ticker)
-        if isinstance(raw.columns, pd.MultiIndex):
-            raw.columns = raw.columns.get_level_values(0)
-        series = raw["Close"]
-        if isinstance(series, pd.DataFrame):
-            series = series.iloc[:, 0]
-        return series.squeeze()
+    def fetch_close(candidates):
+        for ticker in candidates:
+            try:
+                hist = yf.Ticker(ticker).history(period="400d")
+                if not hist.empty and "Close" in hist.columns and len(hist) > 30:
+                    s = hist["Close"].copy()
+                    s.index = s.index.tz_localize(None)
+                    return s
+            except Exception:
+                continue
+        return pd.Series(dtype=float)
 
     df = pd.DataFrame({
-        "XAG_USD": fetch_close("XAGUSD=X"),
-        "EUR_USD": fetch_close("EURUSD=X"),
-        "XAU_USD": fetch_close("XAUUSD=X"),
+        key: fetch_close(tickers)
+        for key, tickers in TICKERS.items()
     }).dropna()
 
     if len(df) < 30:
-        raise ValueError(f"Données insuffisantes ({len(df)} lignes) — Yahoo Finance peut être temporairement indisponible.")
+        raise ValueError(f"Données insuffisantes ({len(df)} lignes) — Yahoo Finance indisponible, réessaie dans quelques minutes.")
 
     df["XAG_EUR"] = df["XAG_USD"] / df["EUR_USD"]
     df["XAU_EUR"] = df["XAU_USD"] / df["EUR_USD"]
