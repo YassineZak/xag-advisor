@@ -86,7 +86,7 @@ def save_portfolio(quantity: float, avg_price: float):
 #   TLT      → ETF obligations 20+ ans  (ticker : TLT)
 #   DXY      → indice Dollar US         (ticker : DX-Y.NYB  / DX=F)
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=900)   # données historiques : cache 15 min
 def get_data():
     TICKERS = {
         "XAG_USD": ["XAGUSD=X", "SI=F"],
@@ -139,6 +139,40 @@ def get_data():
     df["ratio_xau_xag"] = df["XAU_USD"] / df["XAG_USD"]
 
     return df
+
+
+# ── Prix spot quasi temps réel ───────────────────────────────────────────────
+#
+# Cache de 5 minutes — yfinance a environ 15 min de délai sur les données
+# gratuites, mais c'est la meilleure approximation disponible sans API payante.
+
+@st.cache_data(ttl=300)   # cache 5 minutes
+def get_live_price():
+    """
+    Récupère le prix spot le plus récent pour XAG et EUR/USD.
+    Utilise fast_info (plus rapide que history()) pour avoir la dernière cotation.
+    Retourne (xag_eur, xag_usd, eur_usd, timestamp) ou None si échec.
+    """
+    try:
+        xag_info = yf.Ticker("XAGUSD=X").fast_info
+        eur_info = yf.Ticker("EURUSD=X").fast_info
+        xag_usd  = xag_info.last_price
+        eur_usd  = eur_info.last_price
+        if xag_usd and eur_usd and xag_usd > 0 and eur_usd > 0:
+            return xag_usd / eur_usd, xag_usd, eur_usd, datetime.now()
+    except Exception:
+        pass
+    # Fallback : SI=F (futures argent)
+    try:
+        si_info  = yf.Ticker("SI=F").fast_info
+        eur_info = yf.Ticker("EURUSD=X").fast_info
+        xag_usd  = si_info.last_price
+        eur_usd  = eur_info.last_price
+        if xag_usd and eur_usd and xag_usd > 0 and eur_usd > 0:
+            return xag_usd / eur_usd, xag_usd, eur_usd, datetime.now()
+    except Exception:
+        pass
+    return None, None, None, None
 
 
 # ── Indicateurs techniques de base ───────────────────────────────────────────
@@ -560,7 +594,12 @@ def generate_advice(score: int, label: str, ind: dict, df: pd.DataFrame) -> list
 
 # ── Interface ─────────────────────────────────────────────────────────────────
 
-st.title("🥈 XAG/EUR — Advisor Mensuel")
+col_title, col_refresh = st.columns([5, 1])
+col_title.title("🥈 XAG/EUR — Advisor")
+
+if col_refresh.button("🔄 Rafraîchir", use_container_width=True, help="Force le rechargement du prix en temps réel"):
+    st.cache_data.clear()
+    st.rerun()
 
 with st.spinner("Chargement des données marché..."):
     try:
@@ -569,7 +608,16 @@ with st.spinner("Chargement des données marché..."):
         st.error(f"Erreur de chargement des données : {e}")
         st.stop()
 
-price      = df["XAG_EUR"].iloc[-1]
+# ── Prix live (cache 5 min) — remplace le dernier prix historique ─────────────
+live_eur, live_usd, live_fx, live_ts = get_live_price()
+
+if live_eur and live_eur > 0:
+    price = live_eur   # on écrase avec le prix le plus frais disponible
+    price_source = f"Live ~{live_ts.strftime('%H:%M:%S')}"
+else:
+    price = df["XAG_EUR"].iloc[-1]
+    price_source = "Historique (J-1)"
+
 prev_price = df["XAG_EUR"].iloc[-2]
 change_pct = (price - prev_price) / prev_price * 100
 ratio      = df["ratio_xau_xag"].iloc[-1]
@@ -599,7 +647,7 @@ with col_sig:
     else:
         st.error(f"### 🔴 {label}\nScore : **{score} / 100**")
     st.progress(score / 100)
-    st.caption("Score 0–100 basé sur 8 indicateurs. Au-dessus de 60 = conditions favorables à l'achat.")
+    st.caption("Score 0–100 · Aujourd'hui · Au-dessus de 60 = conditions favorables à l'achat.")
 
 with col_why:
     st.markdown("**Analyse détaillée des 8 indicateurs :**")
@@ -703,11 +751,13 @@ if qty > 0:
 # ── 3. MÉTRIQUES MARCHÉ ───────────────────────────────────────────────────────
 
 col1, col2, col3 = st.columns(3)
-col1.metric("Prix XAG/EUR", f"{price:.2f} €", f"{change_pct:+.2f}%",
+col1.metric(f"Prix XAG/EUR · {price_source}", f"{price:.2f} €", f"{change_pct:+.2f}% vs hier",
     help=(
-        "Prix actuel d'une once troy d'argent en euros. "
+        "Prix d'une once troy d'argent en euros. "
         "1 once troy = 31,1 grammes. "
-        "La variation affichée est par rapport à la veille."
+        f"Source : {price_source}. "
+        "Yahoo Finance a environ 15 min de délai sur les données gratuites. "
+        "Clique sur 🔄 Rafraîchir pour forcer la mise à jour."
     ))
 col2.metric("Ratio Or/Argent", f"{ratio:.1f}",
     help=(
@@ -939,7 +989,8 @@ Agrège tous les indicateurs avec des pondérations :
 
 st.divider()
 st.caption(
-    f"Données : Yahoo Finance · Actualisé toutes les heures · "
-    f"Dernière mise à jour : {datetime.today().strftime('%d/%m/%Y %H:%M')} · "
+    f"Données : Yahoo Finance (~15 min de délai) · Prix live mis en cache 5 min · "
+    f"Indicateurs mis en cache 15 min · Clique 🔄 pour forcer le rafraîchissement · "
+    f"Mise à jour : {datetime.today().strftime('%d/%m/%Y %H:%M:%S')} · "
     f"⚠️ Outil d'aide à la décision uniquement — pas un conseil financier"
 )
