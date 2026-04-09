@@ -137,7 +137,7 @@ def get_data():
     return df
 
 
-# ── Indicateurs ──────────────────────────────────────────────────────────────
+# ── Indicateurs techniques de base ───────────────────────────────────────────
 
 def rsi(series, period=14):
     delta = series.diff()
@@ -152,9 +152,145 @@ def bollinger(series, period=20):
     return sma, sma + 2 * std, sma - 2 * std
 
 
-# ── Score d'achat ─────────────────────────────────────────────────────────────
+# ── Calculs avancés : Force Relative & Sharpe ─────────────────────────────────
 
-def compute_score(df):
+# Taux sans risque journalier utilisé pour le Sharpe.
+# On utilise ~4.5% annualisé (taux court terme zone euro ~2025).
+# → 0.045 / 252 jours de bourse = ~0.000179 par jour.
+# Tu peux ajuster RF_DAILY pour refléter les taux actuels.
+RF_DAILY = 0.045 / 252
+
+def force_relative(xag: pd.Series, other: pd.Series) -> pd.Series:
+    """
+    Force Relative (RS) normalisée entre XAG et un autre actif.
+
+    Méthode :
+      1. On normalise chaque série à 100 à leur point de départ commun.
+         normalized_XAG   = XAG   / XAG[0]   * 100
+         normalized_other = other / other[0]  * 100
+      2. RS = normalized_XAG / normalized_other
+
+    Interprétation :
+      RS > 1.0  → XAG surperforme l'actif de référence sur la période
+      RS = 1.0  → performance identique
+      RS < 1.0  → XAG sous-performe l'actif de référence
+
+    Note : on aligne les deux séries sur l'index commun avant le calcul.
+    """
+    common = xag.index.intersection(other.index)
+    x = xag.loc[common]
+    o = other.loc[common]
+
+    # Normalisation : chaque série rebase à 1.0 au premier point disponible
+    x_norm = x / x.iloc[0]
+    o_norm = o / o.iloc[0]
+
+    return x_norm / o_norm
+
+
+def sharpe_rolling(series: pd.Series, window: int) -> pd.Series:
+    """
+    Ratio de Sharpe glissant annualisé sur `window` jours de bourse.
+
+    Formule :
+      rendements   = pct_change() de la série de prix
+      excess_ret   = rendements - RF_DAILY  (rendement au-dessus du taux sans risque)
+      sharpe       = mean(excess_ret) / std(excess_ret) * sqrt(252)
+
+    Le facteur sqrt(252) annualise le Sharpe (252 = nb jours de bourse/an).
+
+    Interprétation :
+      Sharpe > 1.0  → bon rendement ajusté au risque
+      Sharpe > 2.0  → excellent
+      Sharpe < 0    → perte en termes réels (sous le taux sans risque)
+
+    Paramètres ajustables :
+      window  → fenêtre glissante (30 = court terme, 90 = moyen terme)
+      RF_DAILY → taux sans risque journalier (constante en haut du fichier)
+    """
+    returns     = series.pct_change()
+    excess      = returns - RF_DAILY
+    rolling_mean = excess.rolling(window).mean()
+    rolling_std  = returns.rolling(window).std()
+
+    # On évite la division par zéro sur les périodes plates
+    sharpe = (rolling_mean / rolling_std.replace(0, np.nan)) * np.sqrt(252)
+    return sharpe
+
+
+def compute_indicators(df: pd.DataFrame) -> dict:
+    """
+    Calcule tous les indicateurs avancés à partir du DataFrame principal.
+    Retourne un dictionnaire de valeurs scalaires (dernière valeur de chaque série).
+    """
+    ind = {}
+
+    # ── Force Relative (sur les 90 derniers jours) ──────────────────────────
+    # On prend 90j pour capter la tendance moyen terme sans trop de bruit
+    window_rs = 90
+    xag = df["XAG_USD"].tail(window_rs)
+
+    if "SPY" in df.columns and df["SPY"].notna().sum() > 30:
+        rs_spy_series     = force_relative(xag, df["SPY"].tail(window_rs))
+        ind["rs_spy"]     = rs_spy_series.iloc[-1]       # valeur actuelle
+        ind["rs_spy_s"]   = rs_spy_series                # série complète pour graphique
+    else:
+        ind["rs_spy"] = None
+
+    if "GLD" in df.columns and df["GLD"].notna().sum() > 30:
+        rs_gld_series     = force_relative(xag, df["GLD"].tail(window_rs))
+        ind["rs_gld"]     = rs_gld_series.iloc[-1]
+        ind["rs_gld_s"]   = rs_gld_series
+    else:
+        ind["rs_gld"] = None
+
+    if "TLT" in df.columns and df["TLT"].notna().sum() > 30:
+        rs_tlt_series     = force_relative(xag, df["TLT"].tail(window_rs))
+        ind["rs_tlt"]     = rs_tlt_series.iloc[-1]
+        ind["rs_tlt_s"]   = rs_tlt_series
+    else:
+        ind["rs_tlt"] = None
+
+    # ── Sharpe Ratio glissant (30j et 90j) pour XAG et SPY ─────────────────
+    ind["sharpe_xag_30"] = sharpe_rolling(df["XAG_USD"], 30).iloc[-1]
+    ind["sharpe_xag_90"] = sharpe_rolling(df["XAG_USD"], 90).iloc[-1]
+
+    if "SPY" in df.columns and df["SPY"].notna().sum() > 30:
+        ind["sharpe_spy_30"] = sharpe_rolling(df["SPY"], 30).iloc[-1]
+        ind["sharpe_spy_90"] = sharpe_rolling(df["SPY"], 90).iloc[-1]
+    else:
+        ind["sharpe_spy_30"] = None
+        ind["sharpe_spy_90"] = None
+
+    # ── Momentum DXY sur 1 mois (22 jours de bourse) ────────────────────────
+    # Un dollar en hausse pénalise les métaux (corrélation négative historique)
+    if "DXY" in df.columns and df["DXY"].notna().sum() > 25:
+        dxy = df["DXY"].dropna()
+        ind["dxy_mom_1m"] = (dxy.iloc[-1] - dxy.iloc[-22]) / dxy.iloc[-22] * 100
+    else:
+        ind["dxy_mom_1m"] = None
+
+    return ind
+
+
+# ── Score d'achat enrichi ─────────────────────────────────────────────────────
+
+def compute_score(df: pd.DataFrame, ind: dict):
+    """
+    Calcule un score d'achat 0–100 en croisant indicateurs techniques (RSI,
+    Bollinger, moyennes mobiles, ratio XAU/XAG) et indicateurs avancés
+    (Force Relative vs SPY, Sharpe comparé, momentum DXY).
+
+    Pondérations (ajustables) :
+      RSI           : ±20 pts
+      Bollinger     : ±25 pts
+      SMA 20/50     : ±15 pts
+      Ratio XAU/XAG : ±20 pts
+      Perf 1 mois   : ±10 pts
+      Force Rel SPY : ±15 pts   ← nouveau
+      Sharpe XAG/SPY: ±10 pts   ← nouveau
+      DXY momentum  : ±15 pts   ← nouveau
+    """
     price   = df["XAG_EUR"].iloc[-1]
     rsi_val = rsi(df["XAG_EUR"]).iloc[-1]
     sma20_v, upper_v, lower_v = bollinger(df["XAG_EUR"])
@@ -166,14 +302,15 @@ def compute_score(df):
     ratio_m = df["ratio_xau_xag"].mean()
     perf_1m = (price - df["XAG_EUR"].iloc[-22]) / df["XAG_EUR"].iloc[-22] * 100
 
-    score   = 10
+    score   = 10   # base neutre
     reasons = []
 
+    # ── 1. RSI (±20 pts) ────────────────────────────────────────────────────
     if rsi_val < 30:
-        score += 30
+        score += 20
         reasons.append(("✅", f"RSI très bas ({rsi_val:.1f}) — zone de survente forte"))
     elif rsi_val < 45:
-        score += 15
+        score += 10
         reasons.append(("✅", f"RSI bas ({rsi_val:.1f}) — légère survente"))
     elif rsi_val > 70:
         score -= 20
@@ -181,44 +318,107 @@ def compute_score(df):
     else:
         reasons.append(("➡️", f"RSI neutre ({rsi_val:.1f})"))
 
+    # ── 2. Bollinger (±25 pts) ───────────────────────────────────────────────
     bb_pos = (price - lower) / (upper - lower) if (upper - lower) != 0 else 0.5
     if bb_pos < 0.2:
         score += 25
-        reasons.append(("✅", f"Prix proche de la bande basse Bollinger ({bb_pos:.0%}) — signal d'achat"))
+        reasons.append(("✅", f"Prix proche bande basse Bollinger ({bb_pos:.0%}) — signal d'achat"))
     elif bb_pos > 0.8:
         score -= 15
-        reasons.append(("🔴", f"Prix proche de la bande haute Bollinger ({bb_pos:.0%}) — attention"))
+        reasons.append(("🔴", f"Prix proche bande haute Bollinger ({bb_pos:.0%}) — attention"))
     else:
-        reasons.append(("➡️", f"Prix dans la bande médiane Bollinger ({bb_pos:.0%})"))
+        reasons.append(("➡️", f"Prix dans bande médiane Bollinger ({bb_pos:.0%})"))
 
+    # ── 3. Moyennes mobiles SMA20 / SMA50 (±15 pts) ─────────────────────────
     if price < sma50 and price < sma20:
         score += 15
-        reasons.append(("✅", f"Prix sous SMA20 ({sma20:.2f}€) et SMA50 ({sma50:.2f}€) — bon point d'entrée potentiel"))
+        reasons.append(("✅", f"Prix sous SMA20 ({sma20:.2f}€) et SMA50 ({sma50:.2f}€) — bon point d'entrée"))
     elif price > sma50 and price > sma20:
         score -= 10
-        reasons.append(("🔴", f"Prix au-dessus de SMA20 et SMA50 — prudence"))
+        reasons.append(("🔴", f"Prix au-dessus SMA20 et SMA50 — prudence"))
     else:
         reasons.append(("➡️", f"Prix entre les moyennes mobiles"))
 
+    # ── 4. Ratio Or/Argent (±20 pts) ────────────────────────────────────────
     if ratio > ratio_m * 1.1:
         score += 20
-        reasons.append(("✅", f"Ratio or/argent élevé ({ratio:.1f} vs moy. {ratio_m:.1f}) — argent bon marché vs l'or"))
+        reasons.append(("✅", f"Ratio or/argent élevé ({ratio:.1f} vs moy. {ratio_m:.1f}) — argent bon marché"))
     elif ratio < ratio_m * 0.9:
         score -= 10
-        reasons.append(("🔴", f"Ratio or/argent bas ({ratio:.1f}) — argent cher vs l'or"))
+        reasons.append(("🔴", f"Ratio or/argent bas ({ratio:.1f}) — argent relativement cher vs l'or"))
     else:
         reasons.append(("➡️", f"Ratio or/argent normal ({ratio:.1f} | moy. {ratio_m:.1f})"))
 
+    # ── 5. Performance 1 mois (±10 pts) ─────────────────────────────────────
     if perf_1m < -5:
         score += 10
-        reasons.append(("✅", f"Baisse mensuelle de {perf_1m:.1f}% — possible opportunité de racheter bas"))
+        reasons.append(("✅", f"Baisse mensuelle {perf_1m:.1f}% — possible opportunité de racheter bas"))
     elif perf_1m > 10:
         score -= 5
         reasons.append(("⚠️", f"Forte hausse mensuelle +{perf_1m:.1f}% — momentum haussier mais prix élevé"))
     else:
         reasons.append(("➡️", f"Performance mensuelle neutre ({perf_1m:+.1f}%)"))
 
-    return max(0, min(100, score)), reasons, rsi_val
+    # ── 6. Force Relative XAG vs SPY (±15 pts) ──────────────────────────────
+    # RS > 1 sur 90j = XAG surperforme le S&P500 → signal positif
+    # RS < 1 nettement = les actions font mieux, pénalité
+    if ind.get("rs_spy") is not None:
+        rs = ind["rs_spy"]
+        if rs > 1.05:
+            score += 15
+            reasons.append(("✅", f"XAG surperforme SPY (RS={rs:.2f}) — momentum argent fort vs actions"))
+        elif rs < 0.90:
+            score -= 15
+            reasons.append(("🔴", f"XAG sous-performe SPY (RS={rs:.2f}) — les actions dominent, prudence"))
+        else:
+            reasons.append(("➡️", f"Force Relative XAG/SPY neutre (RS={rs:.2f})"))
+
+    # ── 7. Sharpe XAG vs SPY — 30 jours (±10 pts) ───────────────────────────
+    # Si le Sharpe de XAG dépasse celui du SPY à 30j, l'argent offre
+    # un meilleur rendement ajusté au risque à court terme → signal positif
+    s_xag = ind.get("sharpe_xag_30")
+    s_spy = ind.get("sharpe_spy_30")
+    if s_xag is not None and s_spy is not None and not (np.isnan(s_xag) or np.isnan(s_spy)):
+        if s_xag > s_spy + 0.3:
+            score += 10
+            reasons.append(("✅", f"Sharpe XAG 30j ({s_xag:.2f}) > Sharpe SPY ({s_spy:.2f}) — meilleur rendement/risque"))
+        elif s_xag < s_spy - 0.3:
+            score -= 10
+            reasons.append(("🔴", f"Sharpe XAG 30j ({s_xag:.2f}) < Sharpe SPY ({s_spy:.2f}) — SPY plus efficace risque/rendement"))
+        else:
+            reasons.append(("➡️", f"Sharpe XAG 30j ({s_xag:.2f}) ≈ SPY ({s_spy:.2f}) — risque/rendement similaires"))
+
+    # ── 8. Momentum DXY — Dollar Index (±15 pts) ────────────────────────────
+    # Un dollar US fort est historiquement négatif pour les métaux précieux
+    # (les matières premières sont cotées en USD → dollar fort = métal plus cher
+    #  pour les acheteurs étrangers → demande plus faible → prix baisse)
+    dxy_mom = ind.get("dxy_mom_1m")
+    if dxy_mom is not None and not np.isnan(dxy_mom):
+        if dxy_mom > 2.0:
+            score -= 15
+            reasons.append(("🔴", f"Dollar fort : DXY +{dxy_mom:.1f}% sur 1 mois — vent de face pour les métaux"))
+        elif dxy_mom < -2.0:
+            score += 10
+            reasons.append(("✅", f"Dollar faible : DXY {dxy_mom:.1f}% sur 1 mois — favorable aux métaux précieux"))
+        else:
+            reasons.append(("➡️", f"Dollar stable (DXY {dxy_mom:+.1f}% sur 1 mois)"))
+
+    final_score = max(0, min(100, score))
+
+    # ── Signal qualitatif ────────────────────────────────────────────────────
+    rs_spy = ind.get("rs_spy")
+    if final_score >= 75:
+        label = "ACHAT FORT"
+    elif final_score >= 60:
+        label = "ACHETER"
+    elif final_score >= 40:
+        label = "NEUTRE"
+    elif final_score < 25 and rs_spy is not None and rs_spy < 0.90:
+        label = "PRIVILÉGIER SPY"
+    else:
+        label = "ATTENDRE"
+
+    return final_score, label, reasons, rsi_val
 
 
 # ── Interface ─────────────────────────────────────────────────────────────────
@@ -237,6 +437,7 @@ prev_price = df["XAG_EUR"].iloc[-2]
 change_pct = (price - prev_price) / prev_price * 100
 ratio      = df["ratio_xau_xag"].iloc[-1]
 rsi_now    = rsi(df["XAG_EUR"]).iloc[-1]
+ind        = compute_indicators(df)
 
 # ── Statut des flux de données (debug discret) ────────────────────────────────
 with st.expander("📡 Statut des données marché", expanded=False):
@@ -288,25 +489,62 @@ col3.metric("RSI 14j",         f"{rsi_now:.1f}",   help="<30 = survente (achat i
 
 st.divider()
 
-# ── Signal d'achat ────────────────────────────────────────────────────────────
+# ── Signal d'achat enrichi ────────────────────────────────────────────────────
 
-score, reasons, _ = compute_score(df)
-col_sig, col_why  = st.columns([1, 2])
+score, label, reasons, _ = compute_score(df, ind)
+col_sig, col_why = st.columns([1, 2])
 
 with col_sig:
-    if score >= 60:
-        st.success(f"### 🟢 ACHETER\nScore : **{score} / 100**")
-    elif score >= 40:
-        st.warning(f"### 🟡 NEUTRE\nScore : **{score} / 100**")
+    if label == "ACHAT FORT":
+        st.success(f"### 💚 {label}\nScore : **{score} / 100**")
+    elif label == "ACHETER":
+        st.success(f"### 🟢 {label}\nScore : **{score} / 100**")
+    elif label == "NEUTRE":
+        st.warning(f"### 🟡 {label}\nScore : **{score} / 100**")
+    elif label == "PRIVILÉGIER SPY":
+        st.error(f"### 📈 {label}\nScore : **{score} / 100**")
     else:
-        st.error(f"### 🔴 ATTENDRE\nScore : **{score} / 100**")
+        st.error(f"### 🔴 {label}\nScore : **{score} / 100**")
     st.progress(score / 100)
-    st.caption("Score basé sur 5 indicateurs techniques et fondamentaux")
+    st.caption("Score basé sur 8 indicateurs techniques et fondamentaux")
 
 with col_why:
     st.markdown("**Analyse détaillée :**")
     for icon, text in reasons:
         st.markdown(f"{icon} {text}")
+
+# ── Métriques avancées : Sharpe & Force Relative ──────────────────────────────
+st.divider()
+st.subheader("📐 Indicateurs avancés")
+
+mc1, mc2, mc3, mc4, mc5 = st.columns(5)
+
+s30 = ind.get("sharpe_xag_30")
+s90 = ind.get("sharpe_xag_90")
+ss30 = ind.get("sharpe_spy_30")
+rs_spy = ind.get("rs_spy")
+rs_gld = ind.get("rs_gld")
+
+mc1.metric(
+    "Sharpe XAG 30j", f"{s30:.2f}" if s30 and not np.isnan(s30) else "—",
+    help="Rendement ajusté au risque sur 30 jours. >1 = bon, >2 = excellent, <0 = perte réelle"
+)
+mc2.metric(
+    "Sharpe XAG 90j", f"{s90:.2f}" if s90 and not np.isnan(s90) else "—",
+    help="Rendement ajusté au risque sur 90 jours"
+)
+mc3.metric(
+    "Sharpe SPY 30j", f"{ss30:.2f}" if ss30 and not np.isnan(ss30) else "—",
+    help="Sharpe du S&P500 sur 30 jours — référence de comparaison"
+)
+mc4.metric(
+    "RS XAG/SPY 90j", f"{rs_spy:.2f}" if rs_spy else "—",
+    help="Force Relative vs S&P500 sur 90j. >1 = XAG surperforme, <1 = SPY surperforme"
+)
+mc5.metric(
+    "RS XAG/Or 90j", f"{rs_gld:.2f}" if rs_gld else "—",
+    help="Force Relative vs Or sur 90j. >1 = Argent surperforme l'or"
+)
 
 st.divider()
 
