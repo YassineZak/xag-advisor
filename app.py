@@ -576,35 +576,41 @@ ratio      = df["ratio_xau_xag"].iloc[-1]
 rsi_now    = rsi(df["XAG_EUR"]).iloc[-1]
 ind        = compute_indicators(df)
 
-# ── Calculs globaux (nécessaires avant l'affichage) ──────────────────────────
+# ── Calculs globaux ───────────────────────────────────────────────────────────
 
 portfolio    = load_portfolio()
 qty          = portfolio.get("quantity", 0.0)
 avg_price    = portfolio.get("avg_price", 0.0)
-last_updated = portfolio.get("last_updated", None)   # date de dernière saisie
+last_updated = portfolio.get("last_updated", None)
 score, label, reasons, _ = compute_score(df, ind)
-advice_blocks = generate_advice(score, label, ind, df)
 
-# ── 1. CONSEIL DU MOIS — en premier ──────────────────────────────────────────
+# ── 1. SIGNAL D'ACHAT — en premier ───────────────────────────────────────────
 
-st.subheader("🧭 Conseil du mois")
-st.caption("Analyse basée sur l'ensemble des données actuelles — en langage simple.")
-
-for block in advice_blocks:
-    if block["type"] == "success":
-        st.success(f"**{block['titre']}**\n\n{block['texte']}")
-    elif block["type"] == "warning":
-        st.warning(f"**{block['titre']}**\n\n{block['texte']}")
-    elif block["type"] == "error":
-        st.error(f"**{block['titre']}**\n\n{block['texte']}")
+col_sig, col_why = st.columns([1, 2])
+with col_sig:
+    if label == "ACHAT FORT":
+        st.success(f"### 💚 {label}\nScore : **{score} / 100**")
+    elif label == "ACHETER":
+        st.success(f"### 🟢 {label}\nScore : **{score} / 100**")
+    elif label == "NEUTRE":
+        st.warning(f"### 🟡 {label}\nScore : **{score} / 100**")
+    elif label == "PRIVILÉGIER SPY":
+        st.error(f"### 📈 {label}\nScore : **{score} / 100**")
     else:
-        st.info(f"**{block['titre']}**\n\n{block['texte']}")
+        st.error(f"### 🔴 {label}\nScore : **{score} / 100**")
+    st.progress(score / 100)
+    st.caption("Score 0–100 basé sur 8 indicateurs. Au-dessus de 60 = conditions favorables à l'achat.")
+
+with col_why:
+    st.markdown("**Analyse détaillée des 8 indicateurs :**")
+    for icon, text in reasons:
+        st.markdown(f"{icon} {text}")
 
 st.divider()
 
 # ── 2. PORTEFEUILLE + évolution depuis entrée ─────────────────────────────────
 
-if qty > 0 and avg_price > 0:
+if qty > 0:
     current_val = qty * price
     invested    = qty * avg_price
     pnl         = current_val - invested
@@ -722,29 +728,7 @@ col3.metric("RSI 14j", f"{rsi_now:.1f}",
 
 st.divider()
 
-# ── 4. SIGNAL D'ACHAT ────────────────────────────────────────────────────────
-
-col_sig, col_why = st.columns([1, 2])
-with col_sig:
-    if label == "ACHAT FORT":
-        st.success(f"### 💚 {label}\nScore : **{score} / 100**")
-    elif label == "ACHETER":
-        st.success(f"### 🟢 {label}\nScore : **{score} / 100**")
-    elif label == "NEUTRE":
-        st.warning(f"### 🟡 {label}\nScore : **{score} / 100**")
-    elif label == "PRIVILÉGIER SPY":
-        st.error(f"### 📈 {label}\nScore : **{score} / 100**")
-    else:
-        st.error(f"### 🔴 {label}\nScore : **{score} / 100**")
-    st.progress(score / 100)
-    st.caption("Score 0–100 basé sur 8 indicateurs. Au-dessus de 60 = conditions favorables à l'achat.")
-
-with col_why:
-    st.markdown("**Analyse détaillée des 8 indicateurs :**")
-    for icon, text in reasons:
-        st.markdown(f"{icon} {text}")
-
-# ── 5. INDICATEURS AVANCÉS ────────────────────────────────────────────────────
+# ── 4. INDICATEURS AVANCÉS ────────────────────────────────────────────────────
 
 st.divider()
 st.subheader("📐 Indicateurs avancés")
