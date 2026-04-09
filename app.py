@@ -241,17 +241,21 @@ rsi_now    = rsi(df["XAG_EUR"]).iloc[-1]
 # ── Statut des flux de données (debug discret) ────────────────────────────────
 with st.expander("📡 Statut des données marché", expanded=False):
     status_cols = st.columns(5)
+    eur_rate = df["EUR_USD"].iloc[-1]  # taux EUR/USD pour conversion
+
+    # Actifs en USD → convertis en EUR | DXY = indice sans unité, affiché tel quel
     assets = {
-        "XAG (Argent)": "XAG_USD",
-        "SPY (S&P500)": "SPY",
-        "GLD (Or ETF)": "GLD",
-        "TLT (Oblig.)": "TLT",
-        "DXY (Dollar)": "DXY",
+        "XAG (Argent)": ("XAG_USD", "€"),
+        "SPY (S&P500)":  ("SPY",     "€"),
+        "GLD (Or ETF)":  ("GLD",     "€"),
+        "TLT (Oblig.)":  ("TLT",     "€"),
+        "DXY (Dollar)":  ("DXY",     "pts"),  # indice, pas de conversion
     }
-    for col, (label, key) in zip(status_cols, assets.items()):
+    for col, (label, (key, unit)) in zip(status_cols, assets.items()):
         if key in df.columns and df[key].notna().sum() > 10:
             last_val = df[key].iloc[-1]
-            col.metric(label, f"{last_val:.2f}", "✅ OK")
+            display  = last_val / eur_rate if unit == "€" else last_val
+            col.metric(label, f"{display:.2f} {unit}", "✅ OK")
         else:
             col.metric(label, "—", "❌ Manquant")
 
