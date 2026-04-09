@@ -60,7 +60,11 @@ def load_portfolio():
 def save_portfolio(quantity: float, avg_price: float):
     g       = Github(st.secrets["GITHUB_TOKEN"])
     repo    = g.get_repo(REPO_NAME)
-    content = json.dumps({"quantity": quantity, "avg_price": avg_price}, indent=2)
+    content = json.dumps({
+        "quantity":     quantity,
+        "avg_price":    avg_price,
+        "last_updated": datetime.today().strftime("%Y-%m-%d"),  # date de saisie
+    }, indent=2)
     try:
         f = repo.get_contents(PORTFOLIO_FILE)
         repo.update_file(PORTFOLIO_FILE, "Update portfolio", content, f.sha)
@@ -572,48 +576,125 @@ ratio      = df["ratio_xau_xag"].iloc[-1]
 rsi_now    = rsi(df["XAG_EUR"]).iloc[-1]
 ind        = compute_indicators(df)
 
-# ── Statut des flux de données (debug discret) ────────────────────────────────
-with st.expander("📡 Statut des données marché", expanded=False):
-    status_cols = st.columns(5)
-    eur_rate = df["EUR_USD"].iloc[-1]  # taux EUR/USD pour conversion
+# ── Calculs globaux (nécessaires avant l'affichage) ──────────────────────────
 
-    # Actifs en USD → convertis en EUR | DXY = indice sans unité, affiché tel quel
-    assets = {
-        "XAG (Argent)": ("XAG_USD", "€"),
-        "SPY (S&P500)":  ("SPY",     "€"),
-        "GLD (Or ETF)":  ("GLD",     "€"),
-        "TLT (Oblig.)":  ("TLT",     "€"),
-        "DXY (Dollar)":  ("DXY",     "pts"),  # indice, pas de conversion
-    }
-    for col, (label, (key, unit)) in zip(status_cols, assets.items()):
-        if key in df.columns and df[key].notna().sum() > 10:
-            last_val = df[key].iloc[-1]
-            display  = last_val / eur_rate if unit == "€" else last_val
-            col.metric(label, f"{display:.2f} {unit}", "✅ OK")
-        else:
-            col.metric(label, "—", "❌ Manquant")
+portfolio    = load_portfolio()
+qty          = portfolio.get("quantity", 0.0)
+avg_price    = portfolio.get("avg_price", 0.0)
+last_updated = portfolio.get("last_updated", None)   # date de dernière saisie
+score, label, reasons, _ = compute_score(df, ind)
+advice_blocks = generate_advice(score, label, ind, df)
 
-# ── Portefeuille ──────────────────────────────────────────────────────────────
+# ── 1. CONSEIL DU MOIS — en premier ──────────────────────────────────────────
 
-portfolio = load_portfolio()
-qty       = portfolio.get("quantity", 0.0)
-avg_price = portfolio.get("avg_price", 0.0)
+st.subheader("🧭 Conseil du mois")
+st.caption("Analyse basée sur l'ensemble des données actuelles — en langage simple.")
 
-if qty > 0:
+for block in advice_blocks:
+    if block["type"] == "success":
+        st.success(f"**{block['titre']}**\n\n{block['texte']}")
+    elif block["type"] == "warning":
+        st.warning(f"**{block['titre']}**\n\n{block['texte']}")
+    elif block["type"] == "error":
+        st.error(f"**{block['titre']}**\n\n{block['texte']}")
+    else:
+        st.info(f"**{block['titre']}**\n\n{block['texte']}")
+
+st.divider()
+
+# ── 2. PORTEFEUILLE + évolution depuis entrée ─────────────────────────────────
+
+if qty > 0 and avg_price > 0:
     current_val = qty * price
     invested    = qty * avg_price
     pnl         = current_val - invested
-    pnl_pct     = (pnl / invested * 100) if invested > 0 else 0.0
+    pnl_pct     = pnl / invested * 100
 
     st.subheader("💼 Mon portefeuille XAG")
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Quantité", f"{qty:.4f} oz", help="1 oz troy = 31,1 g")
-    c2.metric("Valeur actuelle", f"{current_val:.2f} €")
-    c3.metric("Prix moyen d'achat", f"{avg_price:.2f} €/oz")
-    c4.metric("P&L", f"{pnl:+.2f} €", f"{pnl_pct:+.2f}%")
+    c1.metric("Quantité", f"{qty:.4f} oz", help="1 oz troy = 31,1 grammes")
+    c2.metric("Valeur actuelle", f"{current_val:.2f} €",
+        help="Quantité × prix spot actuel")
+    c3.metric("Prix moyen d'achat", f"{avg_price:.2f} €/oz",
+        help="Prix que tu as saisi lors de ta dernière mise à jour")
+    c4.metric("P&L total", f"{pnl:+.2f} €", f"{pnl_pct:+.2f}%",
+        help="Gain ou perte par rapport à ton prix d'achat moyen")
+
+    # ── Graphique évolution prix + P&L depuis la date d'entrée ──────────────
+    if last_updated:
+        entry_date = pd.to_datetime(last_updated)
+        df_since   = df[df.index >= entry_date].copy()
+        date_label = entry_date.strftime("%d/%m/%Y")
+    else:
+        # Pas de date stockée → on prend les 90 derniers jours par défaut
+        df_since   = df.tail(90).copy()
+        date_label = "90 derniers jours"
+
+    if len(df_since) >= 2:
+        pnl_series = qty * (df_since["XAG_EUR"] - avg_price)  # P&L en € à chaque jour
+
+        fig_pf = make_subplots(
+            rows=2, cols=1,
+            shared_xaxes=True,
+            row_heights=[0.55, 0.45],
+            vertical_spacing=0.08,
+            subplot_titles=(
+                f"Prix XAG/EUR depuis le {date_label}",
+                "Gain / Perte en € depuis ton entrée",
+            ),
+        )
+
+        # ── Subplot 1 : prix + ligne prix d'achat ───────────────────────────
+        # Zone colorée : verte si au-dessus du prix d'achat, rouge si en-dessous
+        fig_pf.add_trace(go.Scatter(
+            x=df_since.index, y=[avg_price] * len(df_since),
+            name=f"Ton prix d'achat ({avg_price:.2f} €)",
+            line=dict(color="orange", dash="dash", width=1.5),
+        ), row=1, col=1)
+        fig_pf.add_trace(go.Scatter(
+            x=df_since.index, y=df_since["XAG_EUR"],
+            name="Prix XAG/EUR",
+            fill="tonexty",
+            fillcolor="rgba(0,200,100,0.12)" if price >= avg_price else "rgba(255,80,80,0.12)",
+            line=dict(color="#c0c0c0", width=2),
+        ), row=1, col=1)
+
+        # Point d'entrée
+        fig_pf.add_trace(go.Scatter(
+            x=[df_since.index[0]], y=[avg_price],
+            mode="markers",
+            name="Point d'entrée",
+            marker=dict(color="orange", size=10, symbol="diamond"),
+        ), row=1, col=1)
+
+        # ── Subplot 2 : P&L cumulé en € ─────────────────────────────────────
+        pnl_color = ["rgba(0,200,100,0.8)" if v >= 0 else "rgba(255,80,80,0.8)"
+                     for v in pnl_series]
+        fig_pf.add_trace(go.Bar(
+            x=df_since.index, y=pnl_series,
+            name="P&L (€)",
+            marker_color=pnl_color,
+            showlegend=False,
+        ), row=2, col=1)
+        fig_pf.add_hline(y=0, line_color="white", line_width=1, row=2, col=1)
+
+        fig_pf.update_yaxes(title_text="€ / oz", row=1, col=1)
+        fig_pf.update_yaxes(title_text="€", row=2, col=1)
+        fig_pf.update_layout(
+            height=500, template="plotly_dark",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            margin=dict(l=10, r=10, t=40, b=10),
+        )
+        st.plotly_chart(fig_pf, use_container_width=True)
+
+        if last_updated:
+            st.caption(f"Données depuis la dernière mise à jour du portefeuille ({date_label}).")
+        else:
+            st.caption("Aucune date de saisie enregistrée — affichage sur 90 jours. "
+                       "Sauvegarde ton portefeuille ci-dessous pour ancrer la date.")
     st.divider()
 
-# ── Métriques marché ──────────────────────────────────────────────────────────
+# ── 3. MÉTRIQUES MARCHÉ ───────────────────────────────────────────────────────
 
 col1, col2, col3 = st.columns(3)
 col1.metric("Prix XAG/EUR", f"{price:.2f} €", f"{change_pct:+.2f}%",
@@ -634,18 +715,16 @@ col3.metric("RSI 14j", f"{rsi_now:.1f}",
     help=(
         "RSI = Relative Strength Index. Mesure si un actif est suracheté ou survendu. "
         "Va de 0 à 100. "
-        "Sous 30 : l'argent a beaucoup baissé, les vendeurs s'épuisent → bon moment potentiel pour acheter. "
-        "Au-dessus de 70 : l'argent a beaucoup monté, les acheteurs s'essoufflent → mieux vaut attendre. "
+        "Sous 30 : l'argent a beaucoup baissé → bon moment potentiel pour acheter. "
+        "Au-dessus de 70 : l'argent a beaucoup monté → mieux vaut attendre. "
         "Entre 30 et 70 : zone neutre."
     ))
 
 st.divider()
 
-# ── Signal d'achat enrichi ────────────────────────────────────────────────────
+# ── 4. SIGNAL D'ACHAT ────────────────────────────────────────────────────────
 
-score, label, reasons, _ = compute_score(df, ind)
 col_sig, col_why = st.columns([1, 2])
-
 with col_sig:
     if label == "ACHAT FORT":
         st.success(f"### 💚 {label}\nScore : **{score} / 100**")
@@ -665,73 +744,55 @@ with col_why:
     for icon, text in reasons:
         st.markdown(f"{icon} {text}")
 
-# ── Métriques avancées : Sharpe & Force Relative ──────────────────────────────
+# ── 5. INDICATEURS AVANCÉS ────────────────────────────────────────────────────
+
 st.divider()
 st.subheader("📐 Indicateurs avancés")
-st.caption(
-    "Ces indicateurs comparent l'argent à d'autres actifs pour savoir si c'est le meilleur placement en ce moment."
-)
+st.caption("Comparaison de l'argent à d'autres actifs pour savoir si c'est le meilleur placement en ce moment.")
 
-mc1, mc2, mc3, mc4, mc5 = st.columns(5)
-
-s30  = ind.get("sharpe_xag_30")
-s90  = ind.get("sharpe_xag_90")
-ss30 = ind.get("sharpe_spy_30")
+s30    = ind.get("sharpe_xag_30")
+s90    = ind.get("sharpe_xag_90")
+ss30   = ind.get("sharpe_spy_30")
 rs_spy = ind.get("rs_spy")
 rs_gld = ind.get("rs_gld")
 
+mc1, mc2, mc3, mc4, mc5 = st.columns(5)
 mc1.metric("Sharpe XAG 30j", f"{s30:.2f}" if s30 and not np.isnan(s30) else "—",
     help=(
-        "Le Ratio de Sharpe mesure le rendement obtenu par rapport au risque pris. "
-        "Calcul sur les 30 derniers jours. "
-        "Au-dessus de 1 = bon rendement pour le risque pris. "
-        "Au-dessus de 2 = excellent. "
-        "En dessous de 0 = l'argent a perdu de la valeur en termes réels."
+        "Mesure le rendement obtenu par rapport au risque pris sur 30 jours. "
+        "> 1 = bon | > 2 = excellent | < 0 = perte réelle."
     ))
 mc2.metric("Sharpe XAG 90j", f"{s90:.2f}" if s90 and not np.isnan(s90) else "—",
-    help=(
-        "Même calcul que le Sharpe 30j mais sur 90 jours — vision moyen terme plus stable, "
-        "moins sensible aux fluctuations récentes."
-    ))
+    help="Même calcul sur 90 jours — vision moyen terme plus stable.")
 mc3.metric("Sharpe SPY 30j", f"{ss30:.2f}" if ss30 and not np.isnan(ss30) else "—",
-    help=(
-        "Ratio de Sharpe du S&P500 (indice des 500 plus grandes entreprises américaines) sur 30 jours. "
-        "Sert de référence : si le Sharpe XAG est plus élevé, l'argent offre un meilleur rendement/risque "
-        "que les actions américaines en ce moment."
-    ))
+    help="Sharpe du S&P500 sur 30j — référence : si XAG > SPY, l'argent est plus efficace.")
 mc4.metric("RS XAG/SPY 90j", f"{rs_spy:.2f}" if rs_spy else "—",
-    help=(
-        "Force Relative de l'argent vs le S&P500 sur 90 jours. "
-        "Calcul : performance XAG / performance SPY, les deux ramenés à 1 au départ. "
-        "Au-dessus de 1 → l'argent a mieux performé que les actions sur 3 mois. "
-        "En dessous de 1 → les actions ont fait mieux."
-    ))
-mc5.metric("RS XAG/Or 90j", f"{rs_gld:.2f}" if rs_gld else "—",
-    help=(
-        "Force Relative de l'argent vs l'or sur 90 jours. "
-        "Au-dessus de 1 → l'argent a surperformé l'or. "
-        "En dessous de 1 → l'or a fait mieux que l'argent."
-    ))
+    help="> 1 = XAG surperforme le S&P500 sur 90j | < 1 = les actions font mieux.")
+mc5.metric("RS XAG/Or 90j",  f"{rs_gld:.2f}" if rs_gld else "—",
+    help="> 1 = Argent surperforme l'or sur 90j | < 1 = l'or fait mieux.")
 
-# ── Conseil du mois ───────────────────────────────────────────────────────────
-st.divider()
-st.subheader("🧭 Conseil du mois")
-st.caption("Analyse personnalisée basée sur l'ensemble des données actuelles — en langage simple.")
-
-advice_blocks = generate_advice(score, label, ind, df)
-for block in advice_blocks:
-    if block["type"] == "success":
-        st.success(f"**{block['titre']}**\n\n{block['texte']}")
-    elif block["type"] == "warning":
-        st.warning(f"**{block['titre']}**\n\n{block['texte']}")
-    elif block["type"] == "error":
-        st.error(f"**{block['titre']}**\n\n{block['texte']}")
-    else:
-        st.info(f"**{block['titre']}**\n\n{block['texte']}")
+# ── Statut des flux (discret) ─────────────────────────────────────────────────
+with st.expander("📡 Statut des données marché", expanded=False):
+    status_cols = st.columns(5)
+    eur_rate = df["EUR_USD"].iloc[-1]
+    assets   = {
+        "XAG (Argent)": ("XAG_USD", "€"),
+        "SPY (S&P500)":  ("SPY",     "€"),
+        "GLD (Or ETF)":  ("GLD",     "€"),
+        "TLT (Oblig.)":  ("TLT",     "€"),
+        "DXY (Dollar)":  ("DXY",     "pts"),
+    }
+    for col, (lbl, (key, unit)) in zip(status_cols, assets.items()):
+        if key in df.columns and df[key].notna().sum() > 10:
+            last_val = df[key].iloc[-1]
+            display  = last_val / eur_rate if unit == "€" else last_val
+            col.metric(lbl, f"{display:.2f} {unit}", "✅ OK")
+        else:
+            col.metric(lbl, "—", "❌ Manquant")
 
 st.divider()
 
-# ── Graphiques ────────────────────────────────────────────────────────────────
+# ── 6. GRAPHIQUES TECHNIQUES ──────────────────────────────────────────────────
 
 st.subheader("📈 Prix XAG/EUR — 6 mois")
 
