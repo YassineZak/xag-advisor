@@ -28,15 +28,24 @@ def get_data():
     end = datetime.today()
     start = end - timedelta(days=400)
 
-    raw_xag = yf.download("XAGUSD=X", start=start, end=end, progress=False)
-    raw_eur = yf.download("EURUSD=X",  start=start, end=end, progress=False)
-    raw_xau = yf.download("XAUUSD=X", start=start, end=end, progress=False)
+    def fetch_close(ticker):
+        raw = yf.download(ticker, start=start, end=end, progress=False)
+        # yfinance >= 0.2.x retourne parfois un MultiIndex (Price, Ticker)
+        if isinstance(raw.columns, pd.MultiIndex):
+            raw.columns = raw.columns.get_level_values(0)
+        series = raw["Close"]
+        if isinstance(series, pd.DataFrame):
+            series = series.iloc[:, 0]
+        return series.squeeze()
 
     df = pd.DataFrame({
-        "XAG_USD": raw_xag["Close"].squeeze(),
-        "EUR_USD": raw_eur["Close"].squeeze(),
-        "XAU_USD": raw_xau["Close"].squeeze(),
+        "XAG_USD": fetch_close("XAGUSD=X"),
+        "EUR_USD": fetch_close("EURUSD=X"),
+        "XAU_USD": fetch_close("XAUUSD=X"),
     }).dropna()
+
+    if len(df) < 30:
+        raise ValueError(f"Données insuffisantes ({len(df)} lignes) — Yahoo Finance peut être temporairement indisponible.")
 
     df["XAG_EUR"] = df["XAG_USD"] / df["EUR_USD"]
     df["XAU_EUR"] = df["XAU_USD"] / df["EUR_USD"]
