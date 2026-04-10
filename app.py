@@ -22,4 +22,4 @@ with tab1:
     xag_tab.render()
 
 with tab2:
-    st.info("Tab BTC en cours de construction...")
+    btc_tab.render()
