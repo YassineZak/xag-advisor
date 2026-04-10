@@ -164,7 +164,7 @@ def compute_btc_score(
 
     Retourne (score, label, reasons) où reasons est une liste de (icon, texte).
     """
-    score = 10  # base neutre
+    score = 30  # base neutre (conditions totalement neutres + cycle normal → ~40 pts)
     reasons = []
 
     rsi_val  = df["RSI"].iloc[-1]
