@@ -76,6 +76,19 @@ def buy_crypto(symbol: str, eur_amount: float) -> tuple:
     api_key = st.secrets.get("BITPANDA_TRADE_KEY", "")
     if not api_key:
         return False, "Clé API trading (BITPANDA_TRADE_KEY) non configurée dans les secrets Streamlit."
+
+    # Diagnostic : vérifie que la clé fonctionne sur un endpoint GET avant de tenter l'ordre
+    try:
+        check = requests.get(
+            "https://api.bitpanda.com/v1/wallets",
+            headers={"X-API-KEY": api_key},
+            timeout=10,
+        )
+        if check.status_code == 401:
+            return False, f"Clé BITPANDA_TRADE_KEY invalide (longueur : {len(api_key)} chars). Vérifie qu'elle est correctement copiée dans les secrets Streamlit."
+    except Exception as e:
+        return False, f"Erreur réseau lors de la vérification de la clé : {e}"
+
     try:
         resp = requests.post(
             "https://api.bitpanda.com/v1/orders",
