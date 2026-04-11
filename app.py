@@ -20,6 +20,29 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ── Authentification ──────────────────────────────────────────────────────────
+
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
+
+if not st.session_state["authenticated"]:
+    st.title("🔒 Portfolio Advisor")
+    st.markdown("---")
+    col, _ = st.columns([1, 2])
+    with col:
+        with st.form("login_form"):
+            password = st.text_input("Mot de passe", type="password", placeholder="••••••••")
+            submitted = st.form_submit_button("Se connecter", use_container_width=True)
+            if submitted:
+                if password == st.secrets.get("APP_PASSWORD", ""):
+                    st.session_state["authenticated"] = True
+                    st.rerun()
+                else:
+                    st.error("Mot de passe incorrect.")
+    st.stop()
+
+# ── App principale ────────────────────────────────────────────────────────────
+
 tab1, tab2 = st.tabs(["🥈 Métaux", "₿ Cryptos"])
 
 with tab1:
