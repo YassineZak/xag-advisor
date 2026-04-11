@@ -69,11 +69,11 @@ def get_btc_live_price() -> tuple:
 # ── Solde Binance ─────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=300)
-def get_btc_balance() -> float:
+def get_btc_balance() -> tuple:
     """
     Récupère le solde BTC (free + locked) depuis Binance.
     Nécessite BINANCE_API_KEY et BINANCE_API_SECRET dans st.secrets.
-    Retourne 0.0 si non configuré ou en cas d'erreur.
+    Retourne (solde, erreur) — erreur est None si succès, str si échec.
     """
     try:
         from binance.client import Client
@@ -81,11 +81,11 @@ def get_btc_balance() -> float:
         api_secret = st.secrets["BINANCE_API_SECRET"]
         client = Client(api_key, api_secret)
         balance = client.get_asset_balance(asset="BTC")
-        return float(balance["free"]) + float(balance["locked"])
+        return float(balance["free"]) + float(balance["locked"]), None
     except KeyError:
-        return 0.0
-    except Exception:
-        return 0.0
+        return 0.0, "Clés BINANCE_API_KEY / BINANCE_API_SECRET absentes des secrets Streamlit."
+    except Exception as e:
+        return 0.0, str(e)
 
 
 # ── Fear & Greed Index ────────────────────────────────────────────────────────
@@ -278,7 +278,7 @@ def render():
         current_price = float(df["Close"].iloc[-1]) / eur_usd
         price_label = "Estimé (EUR)"
 
-    btc_balance = get_btc_balance()
+    btc_balance, btc_balance_error = get_btc_balance()
     fg_value, fg_label, df_fg = get_fear_greed()
     score, signal_label, reasons = compute_btc_score(df, fear_greed=fg_value)
 
@@ -307,8 +307,8 @@ def render():
     pnl_display = f"{pnl_eur:+,.0f} € ({pnl_pct:+.1f}%)" if btc_avg_price > 0 else "—"
     c4.metric("P&L", pnl_display, delta=f"{pnl_pct:+.1f}%" if btc_avg_price > 0 else None)
 
-    if btc_balance == 0.0:
-        st.warning("⚠️ Solde Binance non configuré. Ajoute BINANCE_API_KEY et BINANCE_API_SECRET dans les secrets Streamlit.")
+    if btc_balance_error:
+        st.warning(f"⚠️ Binance : {btc_balance_error}")
 
     st.divider()
 
