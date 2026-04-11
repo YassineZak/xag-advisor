@@ -89,10 +89,7 @@ def buy_crypto(symbol: str, eur_amount: float) -> tuple:
         )
         if resp.status_code in (200, 201):
             return True, f"✅ Ordre d'achat de {eur_amount:.2f} € de {symbol} passé avec succès !"
-        data = resp.json()
-        errors = data.get("errors", [])
-        msg = errors[0].get("message", resp.text) if errors else resp.text
-        return False, f"Erreur Bitpanda : {msg}"
+        return False, f"Erreur Bitpanda (HTTP {resp.status_code}) : {resp.text}"
     except Exception as e:
         return False, f"Erreur réseau : {e}"
 
