@@ -68,24 +68,6 @@ def get_btc_live_price() -> tuple:
 
 # ── Solde Binance ─────────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=300)
-def get_btc_balance() -> tuple:
-    """
-    Récupère le solde BTC (free + locked) depuis Binance.
-    Nécessite BINANCE_API_KEY et BINANCE_API_SECRET dans st.secrets.
-    Retourne (solde, erreur) — erreur est None si succès, str si échec.
-    """
-    try:
-        from binance.client import Client
-        api_key = st.secrets["BINANCE_API_KEY"]
-        api_secret = st.secrets["BINANCE_API_SECRET"]
-        client = Client(api_key, api_secret)
-        balance = client.get_asset_balance(asset="BTC")
-        return float(balance["free"]) + float(balance["locked"]), None
-    except KeyError:
-        return 0.0, "Clés BINANCE_API_KEY / BINANCE_API_SECRET absentes des secrets Streamlit."
-    except Exception as e:
-        return 0.0, str(e)
 
 
 # ── Fear & Greed Index ────────────────────────────────────────────────────────
@@ -278,19 +260,22 @@ def render():
         current_price = float(df["Close"].iloc[-1]) / eur_usd
         price_label = "Estimé (EUR)"
 
-    btc_balance, btc_balance_error = get_btc_balance()
     fg_value, fg_label, df_fg = get_fear_greed()
     score, signal_label, reasons = compute_btc_score(df, fear_greed=fg_value)
 
-    # Lire btc_avg_price depuis portfolio.json via GitHub
+    # Lire btc_avg_price + btc_balance depuis portfolio.json via GitHub
     btc_avg_price = 0.0
+    btc_balance = 0.0
+    btc_balance_updated = ""
     try:
-        from github import Github, GithubException
+        from github import Github
         g = Github(st.secrets["GITHUB_TOKEN"])
         repo = g.get_repo("YassineZak/xag-advisor")
         f = repo.get_contents("portfolio.json")
         portfolio = json.loads(f.decoded_content)
         btc_avg_price = float(portfolio.get("btc_avg_price", 0.0))
+        btc_balance = float(portfolio.get("btc_balance", 0.0))
+        btc_balance_updated = portfolio.get("btc_balance_updated", "")
     except Exception:
         pass
 
@@ -307,8 +292,10 @@ def render():
     pnl_display = f"{pnl_eur:+,.0f} € ({pnl_pct:+.1f}%)" if btc_avg_price > 0 else "—"
     c4.metric("P&L", pnl_display, delta=f"{pnl_pct:+.1f}%" if btc_avg_price > 0 else None)
 
-    if btc_balance_error:
-        st.warning(f"⚠️ Binance : {btc_balance_error}")
+    if btc_balance == 0.0:
+        st.warning("⚠️ Solde BTC non disponible — GitHub Actions n'a pas encore tourné ou portfolio.json n'est pas à jour.")
+    elif btc_balance_updated:
+        st.caption(f"Solde mis à jour automatiquement : {btc_balance_updated}")
 
     st.divider()
 
