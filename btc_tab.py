@@ -66,8 +66,36 @@ def get_btc_live_price() -> tuple:
     return None, None
 
 
-# ── Solde Binance ─────────────────────────────────────────────────────────────
+# ── Soldes Bitpanda ───────────────────────────────────────────────────────────
 
+@st.cache_data(ttl=300)
+def get_bitpanda_balances() -> dict:
+    """
+    Récupère tous les soldes crypto depuis l'API Bitpanda.
+    Retourne un dict {symbol: balance} pour les wallets avec solde > 0.
+    Cache 5 minutes.
+    """
+    try:
+        api_key = st.secrets.get("BITPANDA_API_KEY", "")
+        if not api_key:
+            return {}
+        resp = requests.get(
+            "https://api.bitpanda.com/v1/wallets",
+            headers={"X-API-KEY": api_key},
+            timeout=10
+        )
+        resp.raise_for_status()
+        wallets = resp.json().get("data", [])
+        balances = {}
+        for w in wallets:
+            attrs = w.get("attributes", {})
+            symbol = attrs.get("cryptocoin_symbol", "")
+            balance = float(attrs.get("balance", 0))
+            if balance > 0:
+                balances[symbol] = balances.get(symbol, 0) + balance
+        return balances
+    except Exception:
+        return {}
 
 
 # ── Fear & Greed Index ────────────────────────────────────────────────────────
@@ -263,10 +291,12 @@ def render():
     fg_value, fg_label, df_fg = get_fear_greed()
     score, signal_label, reasons = compute_btc_score(df, fear_greed=fg_value)
 
-    # Lire btc_avg_price + btc_balance depuis portfolio.json via GitHub
+    # Solde BTC depuis Bitpanda (live, pas de Pi ni GitHub Actions)
+    bitpanda_balances = get_bitpanda_balances()
+    btc_balance = bitpanda_balances.get("BTC", 0.0)
+
+    # Prix moyen d'achat depuis portfolio.json (saisi manuellement)
     btc_avg_price = 0.0
-    btc_balance = 0.0
-    btc_balance_updated = ""
     try:
         from github import Github
         g = Github(st.secrets["GITHUB_TOKEN"])
@@ -274,8 +304,6 @@ def render():
         f = repo.get_contents("portfolio.json")
         portfolio = json.loads(f.decoded_content)
         btc_avg_price = float(portfolio.get("btc_avg_price", 0.0))
-        btc_balance = float(portfolio.get("btc_balance", 0.0))
-        btc_balance_updated = portfolio.get("btc_balance_updated", "")
     except Exception:
         pass
 
@@ -293,9 +321,10 @@ def render():
     c4.metric("P&L", pnl_display, delta=f"{pnl_pct:+.1f}%" if btc_avg_price > 0 else None)
 
     if btc_balance == 0.0:
-        st.warning("⚠️ Solde BTC non disponible — GitHub Actions n'a pas encore tourné ou portfolio.json n'est pas à jour.")
-    elif btc_balance_updated:
-        st.caption(f"Solde mis à jour automatiquement : {btc_balance_updated}")
+        if not st.secrets.get("BITPANDA_API_KEY", ""):
+            st.warning("⚠️ Clé API Bitpanda non configurée — ajoute BITPANDA_API_KEY dans les secrets Streamlit.")
+        else:
+            st.info("ℹ️ Solde BTC à 0 sur Bitpanda, ou wallet non trouvé.")
 
     st.divider()
 
@@ -448,7 +477,7 @@ def render():
 
     # ── Mise à jour prix moyen BTC ────────────────────────────────────────────
     st.subheader("⚙️ Mettre à jour mon prix moyen BTC")
-    st.caption("Ton solde BTC est récupéré automatiquement depuis Binance. Saisis uniquement ton prix moyen d'achat.")
+    st.caption("Ton solde BTC est récupéré automatiquement depuis Bitpanda. Saisis uniquement ton prix moyen d'achat.")
 
     with st.form("btc_portfolio_form"):
         new_avg_btc = st.number_input(
@@ -478,7 +507,7 @@ def render():
     # ── Pied de page ──────────────────────────────────────────────────────────
     st.divider()
     st.caption(
-        "Données : Yahoo Finance (~15 min de délai) · Binance API (5 min) · "
+        "Données : Yahoo Finance (~15 min de délai) · Bitpanda API (5 min) · "
         "Fear & Greed : alternative.me (1h) · "
         f"Mis à jour : {datetime.now().strftime('%d/%m/%Y %H:%M:%S')} · "
         "⚠️ Outil d'analyse uniquement — pas un conseil financier"
