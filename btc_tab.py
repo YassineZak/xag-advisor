@@ -66,6 +66,170 @@ def get_btc_live_price() -> tuple:
     return None, None
 
 
+# ── Univers & signaux crypto ──────────────────────────────────────────────────
+
+CRYPTO_UNIVERSE = {
+    "longterm": [
+        "BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "XRP-USD",
+        "ADA-USD", "AVAX-USD", "DOT-USD", "LINK-USD", "LTC-USD",
+        "ATOM-USD", "NEAR-USD", "UNI-USD", "ALGO-USD", "FIL-USD",
+    ],
+    "shortterm": [
+        "DOGE-USD", "SHIB-USD", "PEPE-USD", "FLOKI-USD", "BONK-USD",
+        "WIF-USD", "RENDER-USD", "INJ-USD", "SEI-USD", "SUI-USD",
+        "APT-USD", "TIA-USD", "SAND-USD", "JASMY-USD", "FET-USD",
+    ],
+}
+
+
+@st.cache_data(ttl=3600)
+def get_crypto_signals(category: str) -> list:
+    """
+    Télécharge 90j d'historique pour les cryptos de la catégorie (batch yfinance),
+    calcule un score 0-100 par crypto, retourne les 5 meilleures triées par score.
+    Score : RSI 14j (30 pts) + Bollinger (25 pts) + Perf 1 mois (25 pts) + vs SMA50 (20 pts).
+    """
+    tickers = CRYPTO_UNIVERSE[category]
+    try:
+        raw = yf.download(tickers, period="90d", auto_adjust=True, progress=False)
+        close_df = raw["Close"]
+    except Exception:
+        return []
+
+    results = []
+    for ticker in tickers:
+        try:
+            close = close_df[ticker].dropna()
+            if len(close) < 30:
+                continue
+
+            symbol = ticker.replace("-USD", "")
+            current_price = float(close.iloc[-1])
+            price_24h = float(close.iloc[-2]) if len(close) >= 2 else current_price
+            price_1m = float(close.iloc[-21]) if len(close) >= 21 else current_price
+
+            var_24h = (current_price - price_24h) / price_24h * 100
+            perf_1m = (current_price - price_1m) / price_1m * 100
+
+            # RSI 14j
+            delta = close.diff()
+            gain = delta.clip(lower=0).rolling(14).mean()
+            loss = (-delta.clip(upper=0)).rolling(14).mean()
+            rs = gain / loss.replace(0, np.nan)
+            rsi = float((100 - 100 / (1 + rs)).iloc[-1])
+
+            # Bollinger 20j
+            bb_mid = close.rolling(20).mean()
+            std = close.rolling(20).std()
+            bb_upper = float((bb_mid + 2 * std).iloc[-1])
+            bb_lower = float((bb_mid - 2 * std).iloc[-1])
+            bb_range = bb_upper - bb_lower
+            bb_pos = (current_price - bb_lower) / bb_range if bb_range > 0 else 0.5
+
+            # SMA50
+            sma50 = float(close.rolling(50).mean().iloc[-1])
+
+            # ── Score ────────────────────────────────────────────────────────
+            score = 30  # base neutre
+
+            # RSI (30 pts)
+            if rsi < 30:
+                score += 30
+            elif rsi < 45:
+                score += 15
+            elif rsi > 70:
+                score -= 20
+            elif rsi > 55:
+                score -= 8
+
+            # Bollinger (25 pts)
+            if bb_pos < 0.2:
+                score += 25
+            elif bb_pos < 0.4:
+                score += 12
+            elif bb_pos > 0.8:
+                score -= 15
+
+            # Perf 1 mois (25 pts)
+            if perf_1m < -20:
+                score += 25
+            elif perf_1m < -10:
+                score += 15
+            elif perf_1m < 0:
+                score += 5
+            elif perf_1m > 30:
+                score -= 15
+            elif perf_1m > 15:
+                score -= 8
+
+            # vs SMA50 (20 pts)
+            if current_price < sma50 * 0.85:
+                score += 20
+            elif current_price < sma50:
+                score += 10
+            elif current_price > sma50 * 1.2:
+                score -= 10
+
+            final_score = max(0, min(100, score))
+
+            if final_score >= 75:
+                label = "ACHAT FORT"
+            elif final_score >= 60:
+                label = "ACHETER"
+            elif final_score >= 40:
+                label = "NEUTRE"
+            elif final_score >= 25:
+                label = "ATTENDRE"
+            else:
+                label = "ÉVITER"
+
+            results.append({
+                "symbol": symbol,
+                "price": current_price,
+                "var_24h": var_24h,
+                "perf_1m": perf_1m,
+                "rsi": rsi,
+                "score": final_score,
+                "label": label,
+            })
+        except Exception:
+            continue
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return results[:5]
+
+
+def _render_crypto_signals(signals: list, color_accent: str) -> None:
+    """Affiche 5 cartes de signaux crypto en colonnes."""
+    if not signals:
+        st.info("Données indisponibles — réessaie dans quelques instants.")
+        return
+
+    COLOR_MAP = {
+        "ACHAT FORT": "#22c55e",
+        "ACHETER":    "#86efac",
+        "NEUTRE":     "#facc15",
+        "ATTENDRE":   "#f97316",
+        "ÉVITER":     "#ef4444",
+    }
+
+    cols = st.columns(len(signals))
+    for col, s in zip(cols, signals):
+        c = COLOR_MAP.get(s["label"], "#94a3b8")
+        var_arrow = "▲" if s["var_24h"] >= 0 else "▼"
+        var_color = "#22c55e" if s["var_24h"] >= 0 else "#ef4444"
+        col.markdown(f"""
+<div style="background:#1e1e2e; border-radius:10px; padding:12px; text-align:center; border-top: 3px solid {color_accent};">
+  <div style="font-size:1.3rem; font-weight:bold; color:#f1f5f9;">{s['symbol']}</div>
+  <div style="font-size:0.85rem; color:#94a3b8; margin:2px 0;">${s['price']:,.4g}</div>
+  <div style="font-size:0.8rem; color:{var_color};">{var_arrow} {abs(s['var_24h']):.1f}% 24h</div>
+  <div style="margin:8px 0; font-size:1.5rem; font-weight:bold; color:{c};">{s['score']}</div>
+  <div style="font-size:0.75rem; font-weight:600; color:{c};">{s['label']}</div>
+  <div style="font-size:0.7rem; color:#64748b; margin-top:4px;">RSI {s['rsi']:.0f} · 1m {s['perf_1m']:+.0f}%</div>
+</div>
+        """, unsafe_allow_html=True)
+
+
 # ── Portfolio Bitpanda ────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=300)
@@ -556,6 +720,23 @@ def render():
                 st.rerun()
             except Exception as e:
                 st.error(f"Erreur de sauvegarde : {e}")
+
+    # ── Bloc 6 : Opportunités long terme ─────────────────────────────────────
+    st.divider()
+    st.subheader("🏦 Top 5 — Cryptos sûres (long terme)")
+    st.caption("Grandes capitalisations — investissement stable. Classées par score d'achat technique.")
+    with st.spinner("Calcul des signaux long terme..."):
+        signals_lt = get_crypto_signals("longterm")
+    _render_crypto_signals(signals_lt, color_accent="#60a5fa")
+
+    st.divider()
+
+    # ── Bloc 7 : Opportunités court terme ────────────────────────────────────
+    st.subheader("🚀 Top 5 — Cryptos volatiles (court terme)")
+    st.caption("Petites capitalisations — fort potentiel, risque élevé. Investissement < 5 €.")
+    with st.spinner("Calcul des signaux court terme..."):
+        signals_st = get_crypto_signals("shortterm")
+    _render_crypto_signals(signals_st, color_accent="#a78bfa")
 
     # ── Pied de page ──────────────────────────────────────────────────────────
     st.divider()
