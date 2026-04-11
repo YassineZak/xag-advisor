@@ -66,45 +66,6 @@ def get_btc_live_price() -> tuple:
     return None, None
 
 
-# ── Achat crypto via Bitpanda ─────────────────────────────────────────────────
-
-def buy_crypto(symbol: str, eur_amount: float) -> tuple:
-    """
-    Passe un ordre d'achat au marché via l'API Bitpanda (clé BITPANDA_TRADE_KEY).
-    Retourne (success: bool, message: str).
-    """
-    api_key = st.secrets.get("BITPANDA_TRADE_KEY", "")
-    if not api_key:
-        return False, "Clé API trading (BITPANDA_TRADE_KEY) non configurée dans les secrets Streamlit."
-
-    # Diagnostic : vérifie que la clé fonctionne sur un endpoint GET avant de tenter l'ordre
-    try:
-        check = requests.get(
-            "https://api.bitpanda.com/v1/wallets",
-            headers={"X-API-KEY": api_key},
-            timeout=10,
-        )
-        if check.status_code == 401:
-            return False, f"Clé BITPANDA_TRADE_KEY invalide (longueur : {len(api_key)} chars). Vérifie qu'elle est correctement copiée dans les secrets Streamlit."
-    except Exception as e:
-        return False, f"Erreur réseau lors de la vérification de la clé : {e}"
-
-    try:
-        resp = requests.post(
-            "https://api.bitpanda.com/v1/orders",
-            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
-            json={"order": {
-                "type": "buy",
-                "cryptocoin_symbol": symbol,
-                "fiat_amount": str(round(eur_amount, 2)),
-            }},
-            timeout=15,
-        )
-        if resp.status_code in (200, 201):
-            return True, f"✅ Ordre d'achat de {eur_amount:.2f} € de {symbol} passé avec succès !"
-        return False, f"Erreur Bitpanda (HTTP {resp.status_code}) : {resp.text}"
-    except Exception as e:
-        return False, f"Erreur réseau : {e}"
 
 
 # ── Univers & signaux crypto ──────────────────────────────────────────────────
@@ -241,10 +202,7 @@ def get_crypto_signals(category: str) -> list:
 
 
 def _render_crypto_signals(signals: list, color_accent: str, category: str) -> None:
-    """Affiche 5 cartes de signaux crypto avec formulaire d'achat et confirmation."""
-    if "pending_order" not in st.session_state:
-        st.session_state["pending_order"] = None
-
+    """Affiche 5 cartes de signaux crypto avec lien d'achat vers Bitpanda."""
     if not signals:
         st.info("Données indisponibles — réessaie dans quelques instants.")
         return
@@ -273,40 +231,11 @@ def _render_crypto_signals(signals: list, color_accent: str, category: str) -> N
   <div style="font-size:0.7rem; color:#64748b; margin-top:4px;">RSI {s['rsi']:.0f} · 1m {s['perf_1m']:+.0f}%</div>
 </div>
             """, unsafe_allow_html=True)
-            amount = st.number_input(
-                "Montant €", min_value=1.0, max_value=10000.0, value=5.0, step=1.0,
-                key=f"amt_{category}_{s['symbol']}", label_visibility="collapsed",
+            st.link_button(
+                "🛒 Acheter sur Bitpanda",
+                url=f"https://www.bitpanda.com/en/trade/buy/{s['symbol']}",
+                use_container_width=True,
             )
-            if st.button("🛒 Acheter", key=f"buy_{category}_{s['symbol']}", use_container_width=True):
-                st.session_state["pending_order"] = {
-                    "symbol": s["symbol"],
-                    "amount": amount,
-                    "price": s["price"],
-                    "category": category,
-                }
-
-    # ── Confirmation ──────────────────────────────────────────────────────────
-    pending = st.session_state.get("pending_order")
-    if pending and pending.get("category") == category:
-        st.markdown("---")
-        sym, amt, price = pending["symbol"], pending["amount"], pending["price"]
-        st.warning(
-            f"**Confirmation requise** — Tu vas acheter **{amt:.2f} €** de **{sym}** "
-            f"au prix marché (~${price:,.4g}). Cette action est irréversible."
-        )
-        c1, c2 = st.columns(2)
-        if c1.button("✅ Confirmer", key=f"confirm_{category}", use_container_width=True, type="primary"):
-            with st.spinner("Envoi de l'ordre en cours..."):
-                success, msg = buy_crypto(sym, amt)
-            if success:
-                st.success(msg)
-                st.session_state["pending_order"] = None
-                st.cache_data.clear()
-            else:
-                st.error(msg)
-        if c2.button("❌ Annuler", key=f"cancel_{category}", use_container_width=True):
-            st.session_state["pending_order"] = None
-            st.rerun()
 
 
 # ── Portfolio Bitpanda ────────────────────────────────────────────────────────
