@@ -66,6 +66,37 @@ def get_btc_live_price() -> tuple:
     return None, None
 
 
+# ── Achat crypto via Bitpanda ─────────────────────────────────────────────────
+
+def buy_crypto(symbol: str, eur_amount: float) -> tuple:
+    """
+    Passe un ordre d'achat au marché via l'API Bitpanda (clé BITPANDA_TRADE_KEY).
+    Retourne (success: bool, message: str).
+    """
+    api_key = st.secrets.get("BITPANDA_TRADE_KEY", "")
+    if not api_key:
+        return False, "Clé API trading (BITPANDA_TRADE_KEY) non configurée dans les secrets Streamlit."
+    try:
+        resp = requests.post(
+            "https://api.bitpanda.com/v1/orders",
+            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+            json={"order": {
+                "type": "buy",
+                "cryptocoin_symbol": symbol,
+                "fiat_amount": str(round(eur_amount, 2)),
+            }},
+            timeout=15,
+        )
+        if resp.status_code in (200, 201):
+            return True, f"✅ Ordre d'achat de {eur_amount:.2f} € de {symbol} passé avec succès !"
+        data = resp.json()
+        errors = data.get("errors", [])
+        msg = errors[0].get("message", resp.text) if errors else resp.text
+        return False, f"Erreur Bitpanda : {msg}"
+    except Exception as e:
+        return False, f"Erreur réseau : {e}"
+
+
 # ── Univers & signaux crypto ──────────────────────────────────────────────────
 
 CRYPTO_UNIVERSE = {
@@ -199,8 +230,11 @@ def get_crypto_signals(category: str) -> list:
     return results[:5]
 
 
-def _render_crypto_signals(signals: list, color_accent: str) -> None:
-    """Affiche 5 cartes de signaux crypto en colonnes."""
+def _render_crypto_signals(signals: list, color_accent: str, category: str) -> None:
+    """Affiche 5 cartes de signaux crypto avec formulaire d'achat et confirmation."""
+    if "pending_order" not in st.session_state:
+        st.session_state["pending_order"] = None
+
     if not signals:
         st.info("Données indisponibles — réessaie dans quelques instants.")
         return
@@ -218,7 +252,8 @@ def _render_crypto_signals(signals: list, color_accent: str) -> None:
         c = COLOR_MAP.get(s["label"], "#94a3b8")
         var_arrow = "▲" if s["var_24h"] >= 0 else "▼"
         var_color = "#22c55e" if s["var_24h"] >= 0 else "#ef4444"
-        col.markdown(f"""
+        with col:
+            st.markdown(f"""
 <div style="background:#1e1e2e; border-radius:10px; padding:12px; text-align:center; border-top: 3px solid {color_accent};">
   <div style="font-size:1.3rem; font-weight:bold; color:#f1f5f9;">{s['symbol']}</div>
   <div style="font-size:0.85rem; color:#94a3b8; margin:2px 0;">${s['price']:,.4g}</div>
@@ -227,7 +262,41 @@ def _render_crypto_signals(signals: list, color_accent: str) -> None:
   <div style="font-size:0.75rem; font-weight:600; color:{c};">{s['label']}</div>
   <div style="font-size:0.7rem; color:#64748b; margin-top:4px;">RSI {s['rsi']:.0f} · 1m {s['perf_1m']:+.0f}%</div>
 </div>
-        """, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
+            amount = st.number_input(
+                "Montant €", min_value=1.0, max_value=10000.0, value=5.0, step=1.0,
+                key=f"amt_{category}_{s['symbol']}", label_visibility="collapsed",
+            )
+            if st.button("🛒 Acheter", key=f"buy_{category}_{s['symbol']}", use_container_width=True):
+                st.session_state["pending_order"] = {
+                    "symbol": s["symbol"],
+                    "amount": amount,
+                    "price": s["price"],
+                    "category": category,
+                }
+
+    # ── Confirmation ──────────────────────────────────────────────────────────
+    pending = st.session_state.get("pending_order")
+    if pending and pending.get("category") == category:
+        st.markdown("---")
+        sym, amt, price = pending["symbol"], pending["amount"], pending["price"]
+        st.warning(
+            f"**Confirmation requise** — Tu vas acheter **{amt:.2f} €** de **{sym}** "
+            f"au prix marché (~${price:,.4g}). Cette action est irréversible."
+        )
+        c1, c2 = st.columns(2)
+        if c1.button("✅ Confirmer", key=f"confirm_{category}", use_container_width=True, type="primary"):
+            with st.spinner("Envoi de l'ordre en cours..."):
+                success, msg = buy_crypto(sym, amt)
+            if success:
+                st.success(msg)
+                st.session_state["pending_order"] = None
+                st.cache_data.clear()
+            else:
+                st.error(msg)
+        if c2.button("❌ Annuler", key=f"cancel_{category}", use_container_width=True):
+            st.session_state["pending_order"] = None
+            st.rerun()
 
 
 # ── Portfolio Bitpanda ────────────────────────────────────────────────────────
@@ -496,7 +565,7 @@ def render():
     st.caption("Grandes capitalisations — investissement stable. Classées par score d'achat technique.")
     with st.spinner("Calcul des signaux long terme..."):
         signals_lt = get_crypto_signals("longterm")
-    _render_crypto_signals(signals_lt, color_accent="#60a5fa")
+    _render_crypto_signals(signals_lt, color_accent="#60a5fa", category="longterm")
 
     st.divider()
 
@@ -505,7 +574,7 @@ def render():
     st.caption("Petites capitalisations — fort potentiel, risque élevé. Investissement < 5 €.")
     with st.spinner("Calcul des signaux court terme..."):
         signals_st = get_crypto_signals("shortterm")
-    _render_crypto_signals(signals_st, color_accent="#a78bfa")
+    _render_crypto_signals(signals_st, color_accent="#a78bfa", category="shortterm")
 
     st.divider()
 
