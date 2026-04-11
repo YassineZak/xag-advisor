@@ -66,36 +66,47 @@ def get_btc_live_price() -> tuple:
     return None, None
 
 
-# ── Soldes Bitpanda ───────────────────────────────────────────────────────────
+# ── Portfolio Bitpanda ────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=300)
-def get_bitpanda_balances() -> dict:
+def get_bitpanda_portfolio() -> dict:
     """
-    Récupère tous les soldes crypto depuis l'API Bitpanda.
-    Retourne un dict {symbol: balance} pour les wallets avec solde > 0.
+    Récupère tous les soldes depuis Bitpanda : crypto ET fiat.
+    Retourne {"crypto": {symbol: balance}, "fiat": {symbol: balance}}.
     Cache 5 minutes.
     """
+    result: dict = {"crypto": {}, "fiat": {}}
+    api_key = st.secrets.get("BITPANDA_API_KEY", "")
+    if not api_key:
+        return result
+
+    headers = {"X-API-KEY": api_key}
+
     try:
-        api_key = st.secrets.get("BITPANDA_API_KEY", "")
-        if not api_key:
-            return {}
-        resp = requests.get(
-            "https://api.bitpanda.com/v1/wallets",
-            headers={"X-API-KEY": api_key},
-            timeout=10
-        )
+        resp = requests.get("https://api.bitpanda.com/v1/wallets", headers=headers, timeout=10)
         resp.raise_for_status()
-        wallets = resp.json().get("data", [])
-        balances = {}
-        for w in wallets:
+        for w in resp.json().get("data", []):
             attrs = w.get("attributes", {})
             symbol = attrs.get("cryptocoin_symbol", "")
             balance = float(attrs.get("balance", 0))
-            if balance > 0:
-                balances[symbol] = balances.get(symbol, 0) + balance
-        return balances
+            if symbol and balance > 0:
+                result["crypto"][symbol] = result["crypto"].get(symbol, 0) + balance
     except Exception:
-        return {}
+        pass
+
+    try:
+        resp = requests.get("https://api.bitpanda.com/v1/fiatwallets", headers=headers, timeout=10)
+        resp.raise_for_status()
+        for w in resp.json().get("data", []):
+            attrs = w.get("attributes", {})
+            symbol = attrs.get("fiat_symbol", "")
+            balance = float(attrs.get("balance", 0))
+            if symbol and balance > 0:
+                result["fiat"][symbol] = result["fiat"].get(symbol, 0) + balance
+    except Exception:
+        pass
+
+    return result
 
 
 # ── Fear & Greed Index ────────────────────────────────────────────────────────
@@ -258,17 +269,68 @@ def compute_btc_score(
 # ── Interface UI ──────────────────────────────────────────────────────────────
 
 def render():
-    """Point d'entrée du tab Bitcoin — appelé par app.py."""
+    """Point d'entrée du tab Portfolio Crypto — appelé par app.py."""
 
     # ── Titre & bouton refresh ────────────────────────────────────────────────
     col_title, col_refresh = st.columns([5, 1])
-    col_title.title("₿ Bitcoin (BTC)")
+    col_title.title("📊 Portfolio Bitpanda")
     if col_refresh.button("🔄 Rafraîchir", key="btc_refresh", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
     # ── Chargement des données ────────────────────────────────────────────────
-    with st.spinner("Chargement des données BTC..."):
+    portfolio_data = get_bitpanda_portfolio()
+    crypto_balances = portfolio_data["crypto"]
+    fiat_balances = portfolio_data["fiat"]
+
+    if not st.secrets.get("BITPANDA_API_KEY", ""):
+        st.warning("⚠️ Clé API Bitpanda non configurée — ajoute BITPANDA_API_KEY dans les secrets Streamlit.")
+
+    # ── Bloc 1 : Vue d'ensemble portfolio ────────────────────────────────────
+    st.subheader("💼 Mes avoirs Bitpanda")
+
+    total_eur = sum(fiat_balances.values())  # fiat déjà en EUR
+
+    # Prix live des crypto pour conversion en EUR
+    crypto_prices_eur: dict = {}
+    for symbol in crypto_balances:
+        try:
+            price = yf.Ticker(f"{symbol}-EUR").fast_info.last_price
+            if price and price > 0:
+                crypto_prices_eur[symbol] = float(price)
+        except Exception:
+            pass
+
+    total_eur += sum(
+        crypto_balances[s] * crypto_prices_eur.get(s, 0)
+        for s in crypto_balances
+    )
+
+    # Affichage fiat
+    all_holdings = {}
+    for symbol, balance in fiat_balances.items():
+        all_holdings[symbol] = {"balance": balance, "value_eur": balance, "type": "fiat"}
+    for symbol, balance in crypto_balances.items():
+        price = crypto_prices_eur.get(symbol, 0)
+        all_holdings[symbol] = {"balance": balance, "value_eur": balance * price, "type": "crypto"}
+
+    if all_holdings:
+        cols = st.columns(min(len(all_holdings) + 1, 4))
+        cols[0].metric("Total portfolio", f"{total_eur:,.2f} €")
+        for i, (symbol, info) in enumerate(all_holdings.items(), start=1):
+            col = cols[i % 4] if len(all_holdings) >= 3 else cols[i]
+            if info["type"] == "fiat":
+                cols[i].metric(f"{symbol}", f"{info['balance']:,.2f} €")
+            else:
+                price_str = f"≈ {info['value_eur']:,.2f} €" if info["value_eur"] > 0 else ""
+                cols[i].metric(f"{symbol}", f"{info['balance']:.6f}", delta=price_str if price_str else None)
+    else:
+        st.info("Aucun avoir détecté sur Bitpanda pour l'instant.")
+
+    st.divider()
+
+    # ── Chargement données BTC ────────────────────────────────────────────────
+    with st.spinner("Chargement analyse BTC..."):
         try:
             df = get_btc_data()
         except Exception as e:
@@ -280,7 +342,6 @@ def render():
         current_price = btc_price_eur
         price_label = f"Live ~{price_ts.strftime('%H:%M:%S')}"
     else:
-        # Fallback : convertir USD→EUR approximativement
         try:
             eur_usd = yf.Ticker("EURUSD=X").fast_info.last_price or 1.08
         except Exception:
@@ -291,19 +352,17 @@ def render():
     fg_value, fg_label, df_fg = get_fear_greed()
     score, signal_label, reasons = compute_btc_score(df, fear_greed=fg_value)
 
-    # Solde BTC depuis Bitpanda (live, pas de Pi ni GitHub Actions)
-    bitpanda_balances = get_bitpanda_balances()
-    btc_balance = bitpanda_balances.get("BTC", 0.0)
+    btc_balance = crypto_balances.get("BTC", 0.0)
 
-    # Prix moyen d'achat depuis portfolio.json (saisi manuellement)
+    # Prix moyen d'achat BTC depuis portfolio.json (saisi manuellement)
     btc_avg_price = 0.0
     try:
         from github import Github
         g = Github(st.secrets["GITHUB_TOKEN"])
         repo = g.get_repo("YassineZak/xag-advisor")
         f = repo.get_contents("portfolio.json")
-        portfolio = json.loads(f.decoded_content)
-        btc_avg_price = float(portfolio.get("btc_avg_price", 0.0))
+        portfolio_file = json.loads(f.decoded_content)
+        btc_avg_price = float(portfolio_file.get("btc_avg_price", 0.0))
     except Exception:
         pass
 
@@ -311,20 +370,14 @@ def render():
     pnl_eur = (current_price - btc_avg_price) * btc_balance if btc_avg_price > 0 else 0.0
     pnl_pct = ((current_price - btc_avg_price) / btc_avg_price * 100) if btc_avg_price > 0 else 0.0
 
-    # ── Bloc 1 : Métriques temps réel ────────────────────────────────────────
-    st.subheader(f"Prix actuel · {price_label}")
+    # ── Bloc 2 : Métriques BTC ───────────────────────────────────────────────
+    st.subheader(f"₿ Bitcoin · {price_label}")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Prix BTC", f"{current_price:,.0f} €")
-    c2.metric("Solde BTC", f"{btc_balance:.6f} BTC" if btc_balance > 0 else "Non configuré")
-    c3.metric("Valeur portefeuille", f"{portfolio_value:,.0f} €" if btc_balance > 0 else "—")
+    c2.metric("Solde BTC", f"{btc_balance:.6f} BTC" if btc_balance > 0 else "0 BTC")
+    c3.metric("Valeur BTC", f"{portfolio_value:,.0f} €" if btc_balance > 0 else "—")
     pnl_display = f"{pnl_eur:+,.0f} € ({pnl_pct:+.1f}%)" if btc_avg_price > 0 else "—"
-    c4.metric("P&L", pnl_display, delta=f"{pnl_pct:+.1f}%" if btc_avg_price > 0 else None)
-
-    if btc_balance == 0.0:
-        if not st.secrets.get("BITPANDA_API_KEY", ""):
-            st.warning("⚠️ Clé API Bitpanda non configurée — ajoute BITPANDA_API_KEY dans les secrets Streamlit.")
-        else:
-            st.info("ℹ️ Solde BTC à 0 sur Bitpanda, ou wallet non trouvé.")
+    c4.metric("P&L BTC", pnl_display, delta=f"{pnl_pct:+.1f}%" if btc_avg_price > 0 else None)
 
     st.divider()
 
@@ -507,7 +560,7 @@ def render():
     # ── Pied de page ──────────────────────────────────────────────────────────
     st.divider()
     st.caption(
-        "Données : Yahoo Finance (~15 min de délai) · Bitpanda API (5 min) · "
+        "Données : Yahoo Finance (~15 min de délai) · Bitpanda API (5 min, fiat + crypto) · "
         "Fear & Greed : alternative.me (1h) · "
         f"Mis à jour : {datetime.now().strftime('%d/%m/%Y %H:%M:%S')} · "
         "⚠️ Outil d'analyse uniquement — pas un conseil financier"

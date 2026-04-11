@@ -16,7 +16,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-tab1, tab2 = st.tabs(["🥈 Argent (XAG)", "₿ Bitcoin (BTC)"])
+tab1, tab2 = st.tabs(["🥈 Argent (XAG)", "📊 Portfolio Crypto"])
 
 with tab1:
     xag_tab.render()
