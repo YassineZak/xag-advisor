@@ -491,6 +491,22 @@ def render():
     else:
         st.info("Aucun avoir détecté sur Bitpanda pour l'instant.")
 
+    # ── Bloc 2 : Opportunités long terme ─────────────────────────────────────
+    st.subheader("🏦 Top 5 — Cryptos sûres (long terme)")
+    st.caption("Grandes capitalisations — investissement stable. Classées par score d'achat technique.")
+    with st.spinner("Calcul des signaux long terme..."):
+        signals_lt = get_crypto_signals("longterm")
+    _render_crypto_signals(signals_lt, color_accent="#60a5fa")
+
+    st.divider()
+
+    # ── Bloc 3 : Opportunités court terme ────────────────────────────────────
+    st.subheader("🚀 Top 5 — Cryptos volatiles (court terme)")
+    st.caption("Petites capitalisations — fort potentiel, risque élevé. Investissement < 5 €.")
+    with st.spinner("Calcul des signaux court terme..."):
+        signals_st = get_crypto_signals("shortterm")
+    _render_crypto_signals(signals_st, color_accent="#a78bfa")
+
     st.divider()
 
     # ── Chargement données BTC ────────────────────────────────────────────────
@@ -720,23 +736,6 @@ def render():
                 st.rerun()
             except Exception as e:
                 st.error(f"Erreur de sauvegarde : {e}")
-
-    # ── Bloc 6 : Opportunités long terme ─────────────────────────────────────
-    st.divider()
-    st.subheader("🏦 Top 5 — Cryptos sûres (long terme)")
-    st.caption("Grandes capitalisations — investissement stable. Classées par score d'achat technique.")
-    with st.spinner("Calcul des signaux long terme..."):
-        signals_lt = get_crypto_signals("longterm")
-    _render_crypto_signals(signals_lt, color_accent="#60a5fa")
-
-    st.divider()
-
-    # ── Bloc 7 : Opportunités court terme ────────────────────────────────────
-    st.subheader("🚀 Top 5 — Cryptos volatiles (court terme)")
-    st.caption("Petites capitalisations — fort potentiel, risque élevé. Investissement < 5 €.")
-    with st.spinner("Calcul des signaux court terme..."):
-        signals_st = get_crypto_signals("shortterm")
-    _render_crypto_signals(signals_st, color_accent="#a78bfa")
 
     # ── Pied de page ──────────────────────────────────────────────────────────
     st.divider()
