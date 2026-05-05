@@ -1,5 +1,6 @@
 import json
 import io
+import traceback
 import streamlit as st
 from google import genai as _gemini
 import PIL.Image
@@ -1040,7 +1041,9 @@ def render():
                 try:
                     transactions = parse_screenshot_transactions(img_bytes, media_type)
                 except Exception as e:
-                    st.error(f"Erreur d'analyse : {e}")
+                    st.error(f"**Erreur Gemini** `{type(e).__name__}` : {e}")
+                    st.code(traceback.format_exc(), language="text")
+                    st.info(f"Modèle utilisé : `gemini-2.5-flash` · SDK : `google-genai`")
                     transactions = []
 
             if transactions:
