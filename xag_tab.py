@@ -83,7 +83,7 @@ Règles :
 - Inclure toutes les transactions, même celles visibles partiellement."""
 
     response = client.models.generate_content(
-        model="gemini-2.0-flash-lite",
+        model="gemini-3-flash",
         contents=[prompt, img],
     )
     text = response.text.strip()
