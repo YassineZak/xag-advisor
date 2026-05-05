@@ -128,8 +128,9 @@ Règles :
             return json.loads(text.strip()), model
         except Exception as e:
             last_err = e
-            if "404" in str(e) or "NOT_FOUND" in str(e) or "not found" in str(e).lower():
-                continue  # modèle indisponible → essayer le suivant
+            err = str(e)
+            if any(x in err for x in ("404", "NOT_FOUND", "not found", "503", "UNAVAILABLE", "overloaded")):
+                continue  # modèle absent ou surchargé → essayer le suivant
             raise  # autre erreur (auth, quota…)
 
     raise ValueError(
