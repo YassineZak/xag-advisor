@@ -1,11 +1,13 @@
 import json
+import base64
+import anthropic
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from github import Github, GithubException
 
 
@@ -23,7 +25,7 @@ def load_portfolio():
     except GithubException:
         return {"quantity": 0.0, "avg_price": 0.0}
 
-def save_portfolio(quantity: float, avg_price: float):
+def save_portfolio(quantity: float, avg_price: float, last_transaction_date: str = None):
     g    = Github(st.secrets["GITHUB_TOKEN"])
     repo = g.get_repo(REPO_NAME)
     # Lire d'abord pour préserver les champs existants (btc_balance, btc_avg_price…)
@@ -38,11 +40,111 @@ def save_portfolio(quantity: float, avg_price: float):
         "avg_price":    avg_price,
         "last_updated": datetime.today().strftime("%Y-%m-%d"),
     })
+    if last_transaction_date:
+        data["last_transaction_date"] = last_transaction_date
     content = json.dumps(data, indent=2)
     if sha:
         repo.update_file(PORTFOLIO_FILE, "Update portfolio XAG", content, sha)
     else:
         repo.create_file(PORTFOLIO_FILE, "Create portfolio", content)
+
+
+def parse_screenshot_transactions(image_bytes: bytes, media_type: str) -> list:
+    """
+    Envoie la capture Revolut à Claude Vision et retourne la liste des transactions.
+    Chaque transaction : {date, type, quantity_oz, price_per_oz, total_eur}
+    """
+    client  = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
+    today   = date.today().strftime("%d/%m/%Y")
+    year    = date.today().year
+
+    prompt = f"""Aujourd'hui nous sommes le {today}. Analyse cette capture d'écran de l'historique de transactions XAG (argent métal) dans l'application Revolut.
+
+Extrait TOUTES les transactions visibles et retourne UNIQUEMENT un tableau JSON (aucun texte avant ou après) :
+
+[
+  {{
+    "date": "YYYY-MM-DD",
+    "type": "buy",
+    "quantity_oz": 1.596332,
+    "price_per_oz": 62.64,
+    "total_eur": 101.0
+  }}
+]
+
+Règles :
+- "date" au format ISO YYYY-MM-DD. Les mois sans année utilisent {year}, sauf si le mois est dans le futur (utiliser alors {year - 1}).
+- "type" : "buy" pour "Acheter XAG", "sell" pour "Vendre XAG"
+- "quantity_oz" : nombre d'unités exact (ex: 1.596332)
+- "price_per_oz" : prix par unité en € (ex: 62.64)
+- "total_eur" : montant total, toujours positif (ex: 101.0)
+- Inclure toutes les transactions, même celles visibles partiellement."""
+
+    resp = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=2048,
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": base64.standard_b64encode(image_bytes).decode(),
+                    }
+                },
+                {"type": "text", "text": prompt}
+            ]
+        }]
+    )
+
+    text = resp.content[0].text.strip()
+    if "```" in text:
+        text = text.split("```")[1]
+        if text.startswith("json"):
+            text = text[4:]
+        text = text.split("```")[0]
+    return json.loads(text.strip())
+
+
+def merge_new_transactions(
+    transactions: list,
+    current_qty: float,
+    current_avg: float,
+    last_date_str: str,
+) -> tuple:
+    """
+    Intègre les transactions plus récentes que last_date_str dans le portfolio.
+    Retourne (new_qty, new_avg, new_txns_only, new_last_date).
+    """
+    last_date = None
+    if last_date_str:
+        try:
+            last_date = date.fromisoformat(last_date_str)
+        except ValueError:
+            pass
+
+    sorted_txns = sorted(transactions, key=lambda x: x["date"])
+    new_txns = []
+    qty = current_qty
+    avg = current_avg
+
+    for txn in sorted_txns:
+        txn_date = date.fromisoformat(txn["date"])
+        if last_date and txn_date <= last_date:
+            continue
+        new_txns.append(txn)
+        if txn["type"] == "buy":
+            new_total = qty + txn["quantity_oz"]
+            if new_total > 0:
+                avg = (avg * qty + txn["price_per_oz"] * txn["quantity_oz"]) / new_total
+            qty = new_total
+        else:
+            qty = max(0.0, qty - txn["quantity_oz"])
+
+    new_last_date = sorted_txns[-1]["date"] if sorted_txns else (last_date_str or "")
+    return qty, avg, new_txns, new_last_date
 
 
 def parse_revolut_csv(uploaded_file) -> tuple:
@@ -927,7 +1029,62 @@ def render():
     st.divider()
     st.subheader("⚙️ Mettre à jour mon portefeuille")
 
-    tab_csv, tab_manual = st.tabs(["📎 Importer CSV Revolut", "✏️ Saisie manuelle"])
+    last_txn_date = portfolio.get("last_transaction_date", "")
+
+    tab_screenshot, tab_csv, tab_manual = st.tabs(["📷 Capture d'écran", "📎 CSV Revolut", "✏️ Saisie manuelle"])
+
+    with tab_screenshot:
+        st.caption(
+            "Depuis Revolut : **Argent → Transactions** → fais une capture d'écran et uploade-la ici. "
+            "Seules les transactions plus récentes que la dernière connue seront ajoutées."
+        )
+        if last_txn_date:
+            st.info(f"Dernière transaction enregistrée : **{last_txn_date}** — seules les transactions après cette date seront ajoutées.")
+
+        uploaded_img = st.file_uploader(
+            "Capture d'écran Revolut", type=["jpg", "jpeg", "png"],
+            label_visibility="collapsed", key="screenshot_uploader"
+        )
+        if uploaded_img:
+            img_bytes = uploaded_img.read()
+            media_type = "image/jpeg" if uploaded_img.type in ("image/jpeg", "image/jpg") else "image/png"
+
+            with st.spinner("Analyse de la capture en cours..."):
+                try:
+                    transactions = parse_screenshot_transactions(img_bytes, media_type)
+                except Exception as e:
+                    st.error(f"Erreur d'analyse : {e}")
+                    transactions = []
+
+            if transactions:
+                new_qty, new_avg, new_txns, new_last_date = merge_new_transactions(
+                    transactions, qty, avg_price, last_txn_date
+                )
+
+                if not new_txns:
+                    st.warning(f"Aucune nouvelle transaction détectée après le {last_txn_date}.")
+                else:
+                    # Tableau des nouvelles transactions
+                    df_new = pd.DataFrame([{
+                        "Date":          t["date"],
+                        "Type":          "Achat" if t["type"] == "buy" else "Vente",
+                        "Quantité (oz)": f"+{t['quantity_oz']:.6f}" if t["type"] == "buy" else f"-{t['quantity_oz']:.6f}",
+                        "Prix/oz":       f"{t['price_per_oz']:.2f} €",
+                        "Total":         f"{t['total_eur']:.2f} €",
+                    } for t in new_txns])
+                    st.dataframe(df_new, use_container_width=True, hide_index=True)
+
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Nouveau solde", f"{new_qty:.4f} oz", f"{new_qty - qty:+.4f} oz")
+                    col2.metric("Nouveau prix moyen", f"{new_avg:.2f} €/oz")
+                    col3.metric("Valeur actuelle", f"{new_qty * price:.2f} €")
+
+                    if st.button("✅ Confirmer et sauvegarder", use_container_width=True, type="primary", key="confirm_screenshot"):
+                        with st.spinner("Sauvegarde sur GitHub..."):
+                            save_portfolio(new_qty, new_avg, new_last_date)
+                        st.success(f"Portfolio mis à jour : {new_qty:.4f} oz · prix moyen {new_avg:.2f} €/oz · dernière transaction : {new_last_date}")
+                        st.cache_data.clear()
+                        st.rerun()
 
     with tab_csv:
         st.caption(
