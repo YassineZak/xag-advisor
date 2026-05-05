@@ -70,6 +70,21 @@ def get_btc_live_price() -> tuple:
 
 # ── Univers & signaux crypto ──────────────────────────────────────────────────
 
+# Mapping Yahoo Finance ticker → slug Bitpanda (format: /en/prices/name-symbol)
+BITPANDA_SLUGS = {
+    "BTC-USD": "bitcoin-btc", "ETH-USD": "ethereum-eth", "BNB-USD": "bnb-bnb",
+    "SOL-USD": "solana-sol", "XRP-USD": "xrp-xrp", "ADA-USD": "cardano-ada",
+    "AVAX-USD": "avalanche-avax", "DOT-USD": "polkadot-dot", "LINK-USD": "chainlink-link",
+    "LTC-USD": "litecoin-ltc", "ATOM-USD": "cosmos-atom", "NEAR-USD": "near-protocol-near",
+    "UNI-USD": "uniswap-uni", "ALGO-USD": "algorand-algo", "FIL-USD": "filecoin-fil",
+    "DOGE-USD": "doge-doge", "SHIB-USD": "shiba-inu-shib", "PEPE-USD": "pepe-pepe",
+    "FLOKI-USD": "floki-floki", "BONK-USD": "bonk-bonk", "WIF-USD": "dogwifhat-wif",
+    "RENDER-USD": "render-rndr", "INJ-USD": "injective-inj", "SEI-USD": "sei-sei",
+    "SUI-USD": "sui-sui", "APT-USD": "aptos-apt", "TIA-USD": "celestia-tia",
+    "SAND-USD": "the-sandbox-sand", "JASMY-USD": "jasmycoin-jasmy", "FET-USD": "fetch-ai-fet",
+}
+
+
 CRYPTO_UNIVERSE = {
     "longterm": [
         "BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "XRP-USD",
@@ -231,9 +246,10 @@ def _render_crypto_signals(signals: list, color_accent: str, category: str) -> N
   <div style="font-size:0.7rem; color:#64748b; margin-top:4px;">RSI {s['rsi']:.0f} · 1m {s['perf_1m']:+.0f}%</div>
 </div>
             """, unsafe_allow_html=True)
+            slug = BITPANDA_SLUGS.get(s["symbol"], s["symbol"].replace("-USD", "").lower())
             st.link_button(
                 "🛒 Acheter sur Bitpanda",
-                url=f"https://www.bitpanda.com/en/trade/buy/{s['symbol']}",
+                url=f"https://www.bitpanda.com/en/prices/{slug}",
                 use_container_width=True,
             )
 
