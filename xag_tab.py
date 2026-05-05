@@ -24,18 +24,88 @@ def load_portfolio():
         return {"quantity": 0.0, "avg_price": 0.0}
 
 def save_portfolio(quantity: float, avg_price: float):
-    g       = Github(st.secrets["GITHUB_TOKEN"])
-    repo    = g.get_repo(REPO_NAME)
-    content = json.dumps({
+    g    = Github(st.secrets["GITHUB_TOKEN"])
+    repo = g.get_repo(REPO_NAME)
+    # Lire d'abord pour préserver les champs existants (btc_balance, btc_avg_price…)
+    try:
+        f    = repo.get_contents(PORTFOLIO_FILE)
+        data = json.loads(f.decoded_content)
+        sha  = f.sha
+    except GithubException:
+        f = None; data = {}; sha = None
+    data.update({
         "quantity":     quantity,
         "avg_price":    avg_price,
-        "last_updated": datetime.today().strftime("%Y-%m-%d"),  # date de saisie
-    }, indent=2)
-    try:
-        f = repo.get_contents(PORTFOLIO_FILE)
-        repo.update_file(PORTFOLIO_FILE, "Update portfolio", content, f.sha)
-    except GithubException:
+        "last_updated": datetime.today().strftime("%Y-%m-%d"),
+    })
+    content = json.dumps(data, indent=2)
+    if sha:
+        repo.update_file(PORTFOLIO_FILE, "Update portfolio XAG", content, sha)
+    else:
         repo.create_file(PORTFOLIO_FILE, "Create portfolio", content)
+
+
+def parse_revolut_csv(uploaded_file) -> tuple:
+    """
+    Parse un export CSV Revolut, extrait les transactions XAG complétées.
+    Retourne (quantity_oz, avg_buy_price_eur, df_display).
+    """
+    try:
+        df = pd.read_csv(uploaded_file)
+    except Exception as e:
+        raise ValueError(f"Impossible de lire le fichier : {e}")
+
+    df.columns = df.columns.str.strip()
+
+    # Détecter les lignes XAG
+    if "Currency" in df.columns:
+        mask = df["Currency"].astype(str).str.upper().str.strip() == "XAG"
+    elif "Description" in df.columns:
+        mask = df["Description"].str.contains("silver", case=False, na=False)
+    else:
+        raise ValueError("Format non reconnu — colonnes 'Currency' ou 'Description' absentes.")
+
+    df_xag = df[mask].copy()
+    if df_xag.empty:
+        raise ValueError("Aucune transaction XAG trouvée. Vérifie que le CSV contient bien des transactions argent Revolut.")
+
+    if "State" in df_xag.columns:
+        df_xag = df_xag[df_xag["State"].astype(str).str.upper().str.strip() == "COMPLETED"]
+    if df_xag.empty:
+        raise ValueError("Aucune transaction XAG à l'état COMPLETED trouvée.")
+
+    df_xag["_qty"] = pd.to_numeric(df_xag["Amount"], errors="coerce")
+
+    fiat_col = next(
+        (c for c in ["Fiat amount (inc. fees)", "Fiat amount", "Total Amount"] if c in df_xag.columns),
+        None
+    )
+    if fiat_col:
+        df_xag["_fiat"] = pd.to_numeric(df_xag[fiat_col], errors="coerce").abs()
+
+    df_xag = df_xag.dropna(subset=["_qty"])
+    quantity = float(df_xag["_qty"].sum())
+
+    avg_price = 0.0
+    buys = df_xag[df_xag["_qty"] > 0]
+    if fiat_col and not buys.empty:
+        total_fiat = float(buys["_fiat"].sum())
+        total_qty  = float(buys["_qty"].sum())
+        if total_qty > 0:
+            avg_price = total_fiat / total_qty
+
+    # DataFrame d'affichage
+    date_col = next((c for c in ["Completed Date", "Started Date", "Date"] if c in df_xag.columns), None)
+    rows: dict = {}
+    if date_col:
+        rows["Date"] = df_xag[date_col].values
+    rows["Quantité (oz)"] = df_xag["_qty"].map(lambda x: f"{x:+.4f}").values
+    if fiat_col:
+        rows["Montant"] = df_xag["_fiat"].map(lambda x: f"{x:.2f} €").values
+    if "Description" in df_xag.columns:
+        rows["Description"] = df_xag["Description"].values
+
+    return quantity, avg_price, pd.DataFrame(rows)
 
 
 # ── Données marché ────────────────────────────────────────────────────────────
@@ -857,24 +927,53 @@ def render():
     st.divider()
     st.subheader("⚙️ Mettre à jour mon portefeuille")
 
-    with st.form("portfolio_form"):
-        col_a, col_b = st.columns(2)
-        new_qty = col_a.number_input(
-            "Quantité XAG (oz troy)", min_value=0.0, value=float(qty),
-            step=0.001, format="%.4f",
-            help="Consulte Revolut : Métaux → Argent → ta quantité en oz"
+    tab_csv, tab_manual = st.tabs(["📎 Importer CSV Revolut", "✏️ Saisie manuelle"])
+
+    with tab_csv:
+        st.caption(
+            "Depuis l'app Revolut : **Comptes → Argent → ··· → Exporter relevé → CSV**. "
+            "Le solde et le prix moyen sont calculés automatiquement."
         )
-        new_avg = col_b.number_input(
-            "Prix moyen d'achat (€/oz)", min_value=0.0, value=float(avg_price),
-            step=0.01, format="%.2f",
-            help="Prix moyen auquel tu as acheté ton argent"
-        )
-        submitted = st.form_submit_button("Sauvegarder", use_container_width=True)
-        if submitted:
-            with st.spinner("Sauvegarde sur GitHub..."):
-                save_portfolio(new_qty, new_avg)
-            st.success("Portefeuille mis à jour !")
-            st.rerun()
+        uploaded = st.file_uploader("Fichier CSV Revolut", type="csv", label_visibility="collapsed")
+        if uploaded:
+            try:
+                csv_qty, csv_avg, df_preview = parse_revolut_csv(uploaded)
+                csv_val = csv_qty * price
+                st.markdown(
+                    f"**Solde calculé :** {csv_qty:.4f} oz  ·  "
+                    f"**Prix moyen :** {csv_avg:.2f} €/oz  ·  "
+                    f"**Valeur actuelle :** {csv_val:.2f} €"
+                )
+                with st.expander(f"Voir les {len(df_preview)} transactions XAG"):
+                    st.dataframe(df_preview, use_container_width=True, hide_index=True)
+                if st.button("✅ Confirmer et sauvegarder", use_container_width=True, type="primary"):
+                    with st.spinner("Sauvegarde sur GitHub..."):
+                        save_portfolio(csv_qty, csv_avg)
+                    st.success(f"Portfolio mis à jour : {csv_qty:.4f} oz · prix moyen {csv_avg:.2f} €/oz")
+                    st.cache_data.clear()
+                    st.rerun()
+            except ValueError as e:
+                st.error(str(e))
+
+    with tab_manual:
+        with st.form("portfolio_form"):
+            col_a, col_b = st.columns(2)
+            new_qty = col_a.number_input(
+                "Quantité XAG (oz troy)", min_value=0.0, value=float(qty),
+                step=0.001, format="%.4f",
+                help="Consulte Revolut : Métaux → Argent → ta quantité en oz"
+            )
+            new_avg = col_b.number_input(
+                "Prix moyen d'achat (€/oz)", min_value=0.0, value=float(avg_price),
+                step=0.01, format="%.2f",
+                help="Prix moyen auquel tu as acheté ton argent"
+            )
+            submitted = st.form_submit_button("Sauvegarder", use_container_width=True)
+            if submitted:
+                with st.spinner("Sauvegarde sur GitHub..."):
+                    save_portfolio(new_qty, new_avg)
+                st.success("Portefeuille mis à jour !")
+                st.rerun()
 
     # ── Glossaire pédagogique ────────────────────────────────────────────────────
 
