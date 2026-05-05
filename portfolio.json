@@ -1,9 +1,9 @@
 {
-  "quantity": 0.0,
-  "avg_price": 0.0,
+  "quantity": 8.229421,
+  "avg_price": 83.82,
   "last_updated": "2026-05-05",
   "btc_avg_price": 0.0,
   "btc_balance": 0.0,
   "btc_balance_updated": "",
-  "last_transaction_date": "2026-02-23"
+  "last_transaction_date": "2026-02-25"
 }
