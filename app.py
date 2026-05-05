@@ -120,6 +120,7 @@ st.markdown(f"""
   {_crypto_html}
   {_sep}
   <span style="font-weight:700;color:#94a3b8">Total&nbsp;&nbsp;<span style="color:#fbbf24;font-size:0.95rem">{_fmt(_total)}</span></span>
+  <span style="color:#1e293b;font-size:0.65rem;margin-left:auto">v2.1</span>
 </div>
 """, unsafe_allow_html=True)
 
