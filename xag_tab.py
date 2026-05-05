@@ -1,7 +1,8 @@
 import json
-import base64
-import anthropic
+import io
 import streamlit as st
+import google.generativeai as genai
+import PIL.Image
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -51,12 +52,14 @@ def save_portfolio(quantity: float, avg_price: float, last_transaction_date: str
 
 def parse_screenshot_transactions(image_bytes: bytes, media_type: str) -> list:
     """
-    Envoie la capture Revolut à Claude Vision et retourne la liste des transactions.
+    Envoie la capture Revolut à Gemini Vision et retourne la liste des transactions.
     Chaque transaction : {date, type, quantity_oz, price_per_oz, total_eur}
     """
-    client  = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
-    today   = date.today().strftime("%d/%m/%Y")
-    year    = date.today().year
+    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+    model = genai.GenerativeModel("gemini-1.5-flash")
+    img   = PIL.Image.open(io.BytesIO(image_bytes))
+    today = date.today().strftime("%d/%m/%Y")
+    year  = date.today().year
 
     prompt = f"""Aujourd'hui nous sommes le {today}. Analyse cette capture d'écran de l'historique de transactions XAG (argent métal) dans l'application Revolut.
 
@@ -80,26 +83,8 @@ Règles :
 - "total_eur" : montant total, toujours positif (ex: 101.0)
 - Inclure toutes les transactions, même celles visibles partiellement."""
 
-    resp = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=2048,
-        messages=[{
-            "role": "user",
-            "content": [
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": media_type,
-                        "data": base64.standard_b64encode(image_bytes).decode(),
-                    }
-                },
-                {"type": "text", "text": prompt}
-            ]
-        }]
-    )
-
-    text = resp.content[0].text.strip()
+    response = model.generate_content([prompt, img])
+    text = response.text.strip()
     if "```" in text:
         text = text.split("```")[1]
         if text.startswith("json"):
