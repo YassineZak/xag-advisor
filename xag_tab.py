@@ -1073,6 +1073,15 @@ def render():
         if last_txn_date:
             st.info(f"Dernière transaction enregistrée : **{last_txn_date}** — seules les transactions après cette date seront ajoutées.")
 
+        if st.button("🔍 Voir les modèles Gemini disponibles", key="debug_gemini"):
+            try:
+                client = _gemini.Client(api_key=st.secrets["GOOGLE_API_KEY"])
+                models = sorted([m.name for m in client.models.list()])
+                st.success(f"**{len(models)} modèles disponibles :**")
+                st.code("\n".join(models))
+            except Exception as e:
+                st.error(f"Erreur : {e}")
+
         uploaded_img = st.file_uploader(
             "Capture d'écran Revolut", type=["jpg", "jpeg", "png"],
             label_visibility="collapsed", key="screenshot_uploader"
