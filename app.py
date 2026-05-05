@@ -1,6 +1,10 @@
 import streamlit as st
 import xag_tab
 import btc_tab
+from streamlit_cookies_manager import EncryptedCookieManager
+from datetime import datetime, timedelta
+
+COOKIE_HOURS = 8
 
 st.set_page_config(
     page_title="Portfolio Advisor",
@@ -21,10 +25,28 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ── Cookies (doit être initialisé tôt, avant tout rendu conditionnel) ──────────
+
+_cookie_pw = st.secrets.get("APP_PASSWORD", "default") + "-xag-cookie-v1"
+cookies = EncryptedCookieManager(prefix="xag_", password=_cookie_pw)
+
+if not cookies.ready():
+    st.stop()
+
 # ── Authentification ──────────────────────────────────────────────────────────
 
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
+
+# Restaurer la session depuis le cookie
+if not st.session_state["authenticated"]:
+    _stored = cookies.get("auth_expiry")
+    if _stored:
+        try:
+            if datetime.now() < datetime.fromisoformat(_stored):
+                st.session_state["authenticated"] = True
+        except ValueError:
+            pass
 
 if not st.session_state["authenticated"]:
     st.title("🔒 Portfolio Advisor")
@@ -36,6 +58,9 @@ if not st.session_state["authenticated"]:
             submitted = st.form_submit_button("Se connecter", use_container_width=True)
             if submitted:
                 if password == st.secrets.get("APP_PASSWORD", ""):
+                    expiry = (datetime.now() + timedelta(hours=COOKIE_HOURS)).isoformat()
+                    cookies["auth_expiry"] = expiry
+                    cookies.save()
                     st.session_state["authenticated"] = True
                     st.rerun()
                 else:
