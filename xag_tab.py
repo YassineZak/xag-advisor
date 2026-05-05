@@ -51,6 +51,24 @@ def save_portfolio(quantity: float, avg_price: float, last_transaction_date: str
         repo.create_file(PORTFOLIO_FILE, "Create portfolio", content)
 
 
+LOG_FILE = "logs/gemini_errors.log"
+
+def log_error_to_github(error: Exception):
+    try:
+        g    = Github(st.secrets["GITHUB_TOKEN"])
+        repo = g.get_repo(REPO_NAME)
+        ts   = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        entry = f"[{ts}] {type(error).__name__}: {error}\n{traceback.format_exc()}\n{'─'*60}\n"
+        try:
+            f       = repo.get_contents(LOG_FILE)
+            content = f.decoded_content.decode() + entry
+            repo.update_file(LOG_FILE, f"log: erreur Gemini {ts}", content, f.sha)
+        except GithubException:
+            repo.create_file(LOG_FILE, f"log: erreur Gemini {ts}", entry)
+    except Exception:
+        pass  # ne pas casser l'UI si le log échoue
+
+
 def parse_screenshot_transactions(image_bytes: bytes, media_type: str) -> list:
     """
     Envoie la capture Revolut à Gemini Vision et retourne la liste des transactions.
@@ -1041,9 +1059,8 @@ def render():
                 try:
                     transactions = parse_screenshot_transactions(img_bytes, media_type)
                 except Exception as e:
-                    st.error(f"**Erreur Gemini** `{type(e).__name__}` : {e}")
-                    st.code(traceback.format_exc(), language="text")
-                    st.info(f"Modèle utilisé : `gemini-2.5-flash` · SDK : `google-genai`")
+                    log_error_to_github(e)
+                    st.error(f"Erreur d'analyse ({type(e).__name__}) — log enregistré sur GitHub (`logs/gemini_errors.log`)")
                     transactions = []
 
             if transactions:
