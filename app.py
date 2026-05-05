@@ -45,7 +45,7 @@ if not st.session_state["authenticated"]:
 # ── Header portfolio ─────────────────────────────────────────────────────────
 
 def _fmt(v, dec=2):
-    return f"€{v:,.{dec}f}" if v is not None else "—"
+    return f"{v:,.{dec}f} €" if v is not None else "—"
 
 def _pnl_html(current, avg):
     if not avg or avg <= 0 or current is None:
