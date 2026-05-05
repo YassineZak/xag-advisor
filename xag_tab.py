@@ -69,12 +69,38 @@ def log_error_to_github(error: Exception):
         pass  # ne pas casser l'UI si le log échoue
 
 
+def _find_gemini_model(client) -> str:
+    """Retourne le premier modèle Gemini flash/pro disponible sur ce compte."""
+    PREFERRED = [
+        "gemini-2.5-flash", "gemini-2.5-pro",
+        "gemini-3.0-flash", "gemini-3-flash",
+        "gemini-2.0-flash", "gemini-2.0-flash-lite",
+        "gemini-1.5-flash", "gemini-1.5-flash-8b",
+    ]
+    try:
+        available = set()
+        for m in client.models.list():
+            name = m.name if isinstance(m.name, str) else str(m.name)
+            available.add(name.split("/")[-1])
+        for model in PREFERRED:
+            if model in available:
+                return model
+        # fallback : premier modèle contenant "flash"
+        flash = [m for m in available if "flash" in m.lower()]
+        if flash:
+            return sorted(flash)[-1]
+    except Exception:
+        pass
+    return "gemini-2.5-flash"
+
+
 def parse_screenshot_transactions(image_bytes: bytes, media_type: str) -> list:
     """
     Envoie la capture Revolut à Gemini Vision et retourne la liste des transactions.
     Chaque transaction : {date, type, quantity_oz, price_per_oz, total_eur}
     """
     client = _gemini.Client(api_key=st.secrets["GOOGLE_API_KEY"])
+    model  = _find_gemini_model(client)
     img    = PIL.Image.open(io.BytesIO(image_bytes))
     today  = date.today().strftime("%d/%m/%Y")
     year   = date.today().year
@@ -102,7 +128,7 @@ Règles :
 - Inclure toutes les transactions, même celles visibles partiellement."""
 
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=model,
         contents=[prompt, img],
     )
     text = response.text.strip()
@@ -111,7 +137,7 @@ Règles :
         if text.startswith("json"):
             text = text[4:]
         text = text.split("```")[0]
-    return json.loads(text.strip())
+    return json.loads(text.strip()), model
 
 
 def merge_new_transactions(
@@ -1057,10 +1083,18 @@ def render():
 
             with st.spinner("Analyse de la capture en cours..."):
                 try:
-                    transactions = parse_screenshot_transactions(img_bytes, media_type)
+                    transactions, used_model = parse_screenshot_transactions(img_bytes, media_type)
+                    st.caption(f"Modèle utilisé : `{used_model}`")
                 except Exception as e:
                     log_error_to_github(e)
-                    st.error(f"Erreur d'analyse ({type(e).__name__}) — log enregistré sur GitHub (`logs/gemini_errors.log`)")
+                    # Afficher les modèles disponibles pour aider au debug
+                    try:
+                        client = _gemini.Client(api_key=st.secrets["GOOGLE_API_KEY"])
+                        available = sorted([m.name.split("/")[-1] for m in client.models.list()])
+                        st.error(f"Erreur d'analyse : {e}")
+                        st.info(f"Modèles disponibles sur ton compte : `{'`, `'.join(available)}`")
+                    except Exception:
+                        st.error(f"Erreur d'analyse : {e}")
                     transactions = []
 
             if transactions:
