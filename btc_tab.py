@@ -281,6 +281,35 @@ def get_bitpanda_portfolio() -> dict:
     return result
 
 
+@st.cache_data(ttl=300)
+def get_bitpanda_values() -> dict:
+    """
+    Retourne holdings Bitpanda valorisés en EUR + total.
+    {"holdings": {symbol: {balance, value_eur, type}}, "total_eur": float}
+    """
+    data = get_bitpanda_portfolio()
+    holdings: dict = {}
+    total_eur = 0.0
+
+    for symbol, balance in data["fiat"].items():
+        holdings[symbol] = {"balance": balance, "value_eur": balance, "type": "fiat"}
+        total_eur += balance
+
+    for symbol, balance in data["crypto"].items():
+        price = 0.0
+        try:
+            p = yf.Ticker(f"{symbol}-EUR").fast_info.last_price
+            if p and p > 0:
+                price = float(p)
+        except Exception:
+            pass
+        value = balance * price
+        holdings[symbol] = {"balance": balance, "price_eur": price, "value_eur": value, "type": "crypto"}
+        total_eur += value
+
+    return {"holdings": holdings, "total_eur": total_eur}
+
+
 # ── Fear & Greed Index ────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=3600)
