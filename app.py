@@ -65,20 +65,21 @@ _bp       = btc_tab.get_bitpanda_values()
 _bp_total = _bp["total_eur"]
 _total    = (_xag_val or 0) + _bp_total
 
-# Construire les items crypto/fiat Bitpanda
+# Construire les items crypto/fiat Bitpanda — crypto d'abord, fiat à la fin
 _crypto_items_html = []
 for _sym, _info in _bp["holdings"].items():
-    if _info["type"] == "fiat":
-        _crypto_items_html.append(
-            f'<span><span style="color:#64748b">{_sym}</span>&nbsp;'
-            f'<b style="color:#f8fafc">{_info["balance"]:,.2f} €</b></span>'
-        )
-    else:
+    if _info["type"] == "crypto":
         _val_str = _fmt(_info["value_eur"]) if _info["value_eur"] > 0 else "—"
         _crypto_items_html.append(
             f'<span><b style="color:#94a3b8">{_sym}</b>&nbsp;'
             f'<b style="color:#e2e8f0">{_info["balance"]:.5f}</b>'
-            f'&nbsp;→&nbsp;<b style="color:#f8fafc">{_val_str}</b></span>'
+            f'&nbsp;→&nbsp;<b style="color:#22c55e">{_val_str}</b></span>'
+        )
+for _sym, _info in _bp["holdings"].items():
+    if _info["type"] == "fiat":
+        _crypto_items_html.append(
+            f'<span><span style="color:#64748b">{_sym}</span>&nbsp;'
+            f'<b style="color:#22c55e">{_info["balance"]:,.2f} €</b></span>'
         )
 _sep = '<span style="color:#334155">│</span>'
 _crypto_html = f'&nbsp;{_sep}&nbsp;'.join(_crypto_items_html) if _crypto_items_html else '<span style="color:#64748b">—</span>'
@@ -89,7 +90,7 @@ st.markdown(f"""
   <span style="color:#64748b;font-weight:700;font-size:0.72rem;letter-spacing:.1em;text-transform:uppercase">Portefeuille</span>
   <span>🥈&nbsp;<b style="color:#e2e8f0">{_xag_qty:.3f} oz</b>
         <span style="color:#64748b">&nbsp;·&nbsp;{_fmt(_xag_eur)}/oz</span>
-        &nbsp;→&nbsp;<b style="color:#f8fafc">{_fmt(_xag_val)}</b>{_pnl_html(_xag_eur, _xag_avg)}</span>
+        &nbsp;→&nbsp;<b style="color:#22c55e">{_fmt(_xag_val)}</b>{_pnl_html(_xag_eur, _xag_avg)}</span>
   {_sep}
   {_crypto_html}
   {_sep}
