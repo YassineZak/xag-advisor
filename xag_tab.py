@@ -69,38 +69,23 @@ def log_error_to_github(error: Exception):
         pass  # ne pas casser l'UI si le log échoue
 
 
-def _find_gemini_model(client) -> str:
-    """Retourne le premier modèle Gemini flash/pro disponible sur ce compte."""
-    PREFERRED = [
-        "gemini-2.5-flash", "gemini-2.5-pro",
-        "gemini-3.0-flash", "gemini-3-flash",
-        "gemini-2.0-flash", "gemini-2.0-flash-lite",
-        "gemini-1.5-flash", "gemini-1.5-flash-8b",
-    ]
-    try:
-        available = set()
-        for m in client.models.list():
-            name = m.name if isinstance(m.name, str) else str(m.name)
-            available.add(name.split("/")[-1])
-        for model in PREFERRED:
-            if model in available:
-                return model
-        # fallback : premier modèle contenant "flash"
-        flash = [m for m in available if "flash" in m.lower()]
-        if flash:
-            return sorted(flash)[-1]
-    except Exception:
-        pass
-    return "gemini-2.5-flash"
+GEMINI_MODELS_TO_TRY = [
+    "gemini-2.5-flash-preview-05-20",
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-flash-8b",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+]
 
 
-def parse_screenshot_transactions(image_bytes: bytes, media_type: str) -> list:
+def parse_screenshot_transactions(image_bytes: bytes, media_type: str) -> tuple:
     """
-    Envoie la capture Revolut à Gemini Vision et retourne la liste des transactions.
-    Chaque transaction : {date, type, quantity_oz, price_per_oz, total_eur}
+    Envoie la capture Revolut à Gemini Vision et retourne (transactions, model_used).
+    Teste les modèles un par un jusqu'à trouver un qui fonctionne.
     """
     client = _gemini.Client(api_key=st.secrets["GOOGLE_API_KEY"])
-    model  = _find_gemini_model(client)
     img    = PIL.Image.open(io.BytesIO(image_bytes))
     today  = date.today().strftime("%d/%m/%Y")
     year   = date.today().year
@@ -127,17 +112,31 @@ Règles :
 - "total_eur" : montant total, toujours positif (ex: 101.0)
 - Inclure toutes les transactions, même celles visibles partiellement."""
 
-    response = client.models.generate_content(
-        model=model,
-        contents=[prompt, img],
+    last_err = None
+    for model in GEMINI_MODELS_TO_TRY:
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=[prompt, img],
+            )
+            text = response.text.strip()
+            if "```" in text:
+                text = text.split("```")[1]
+                if text.startswith("json"):
+                    text = text[4:]
+                text = text.split("```")[0]
+            return json.loads(text.strip()), model
+        except Exception as e:
+            last_err = e
+            if "404" in str(e) or "NOT_FOUND" in str(e) or "not found" in str(e).lower():
+                continue  # modèle indisponible → essayer le suivant
+            raise  # autre erreur (auth, quota…)
+
+    raise ValueError(
+        f"Aucun modèle Gemini disponible sur ce compte. "
+        f"Essayés : {', '.join(GEMINI_MODELS_TO_TRY)}. "
+        f"Dernière erreur : {last_err}"
     )
-    text = response.text.strip()
-    if "```" in text:
-        text = text.split("```")[1]
-        if text.startswith("json"):
-            text = text[4:]
-        text = text.split("```")[0]
-    return json.loads(text.strip()), model
 
 
 def merge_new_transactions(
