@@ -1,7 +1,7 @@
 import json
 import io
 import streamlit as st
-import google.generativeai as genai
+from google import genai as _gemini
 import PIL.Image
 import yfinance as yf
 import pandas as pd
@@ -55,11 +55,10 @@ def parse_screenshot_transactions(image_bytes: bytes, media_type: str) -> list:
     Envoie la capture Revolut à Gemini Vision et retourne la liste des transactions.
     Chaque transaction : {date, type, quantity_oz, price_per_oz, total_eur}
     """
-    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-    model = genai.GenerativeModel("gemini-1.5-flash")
-    img   = PIL.Image.open(io.BytesIO(image_bytes))
-    today = date.today().strftime("%d/%m/%Y")
-    year  = date.today().year
+    client = _gemini.Client(api_key=st.secrets["GOOGLE_API_KEY"])
+    img    = PIL.Image.open(io.BytesIO(image_bytes))
+    today  = date.today().strftime("%d/%m/%Y")
+    year   = date.today().year
 
     prompt = f"""Aujourd'hui nous sommes le {today}. Analyse cette capture d'écran de l'historique de transactions XAG (argent métal) dans l'application Revolut.
 
@@ -83,7 +82,10 @@ Règles :
 - "total_eur" : montant total, toujours positif (ex: 101.0)
 - Inclure toutes les transactions, même celles visibles partiellement."""
 
-    response = model.generate_content([prompt, img])
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=[prompt, img],
+    )
     text = response.text.strip()
     if "```" in text:
         text = text.split("```")[1]
