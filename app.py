@@ -11,6 +11,7 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+    header[data-testid="stHeader"] { display: none !important; }
     .block-container { padding-top: 1rem; }
     .stMetric { background: #1e1e2e; border-radius: 10px; padding: 10px; }
 
