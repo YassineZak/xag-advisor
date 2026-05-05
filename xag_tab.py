@@ -106,7 +106,8 @@ Extrait TOUTES les transactions visibles et retourne UNIQUEMENT un tableau JSON 
 
 Règles :
 - "date" au format ISO YYYY-MM-DD. Les mois sans année utilisent {year}, sauf si le mois est dans le futur (utiliser alors {year - 1}).
-- "type" : "buy" pour "Acheter XAG", "sell" pour "Vendre XAG"
+- "type" : "buy" pour toute acquisition de XAG : "Acheter XAG", conversion/échange XAU → XAG, ou toute ligne où tu reçois de l'argent métal. "sell" pour toute cession de XAG.
+- Pour une conversion XAU → XAG : "quantity_oz" = quantité XAG reçue, "total_eur" = valeur EUR équivalente, "price_per_oz" = total_eur / quantity_oz.
 - "quantity_oz" : nombre d'unités exact (ex: 1.596332)
 - "price_per_oz" : prix par unité en € (ex: 62.64)
 - "total_eur" : montant total, toujours positif (ex: 101.0)
