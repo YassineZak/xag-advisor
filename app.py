@@ -1,10 +1,12 @@
+import hmac
+import hashlib
+import time
 import streamlit as st
 import xag_tab
 import btc_tab
-from streamlit_cookies_manager import EncryptedCookieManager
-from datetime import datetime, timedelta
 
-COOKIE_HOURS = 8
+SESSION_HOURS = 8
+_AUTH_PARAM   = "auth"
 
 st.set_page_config(
     page_title="Portfolio Advisor",
@@ -18,35 +20,39 @@ st.markdown("""
     header[data-testid="stHeader"] { display: none !important; }
     .block-container { padding-top: 1rem; }
     .stMetric { background: #1e1e2e; border-radius: 10px; padding: 10px; }
-
-    /* Onglets — texte toujours visible */
     [data-baseweb="tab"] { color: #cbd5e1 !important; font-size: 1rem !important; font-weight: 600 !important; }
     [data-baseweb="tab"][aria-selected="true"] { color: #f1f5f9 !important; border-bottom: 3px solid #f1f5f9 !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Cookies (doit être initialisé tôt, avant tout rendu conditionnel) ──────────
+# ── Auth via query param (fonctionne sur tous navigateurs dont Safari iOS) ────
 
-_cookie_pw = st.secrets.get("APP_PASSWORD", "default") + "-xag-cookie-v1"
-cookies = EncryptedCookieManager(prefix="xag_", password=_cookie_pw)
+def _sign(ts: int) -> str:
+    pw  = st.secrets.get("APP_PASSWORD", "").encode()
+    msg = f"{ts}:xag-v2".encode()
+    return hmac.new(pw, msg, hashlib.sha256).hexdigest()[:24]
 
-if not cookies.ready():
-    st.stop()
+def _check_auth() -> bool:
+    val = st.query_params.get(_AUTH_PARAM, "")
+    if not val or "." not in val:
+        return False
+    try:
+        tok, ts_str = val.rsplit(".", 1)
+        ts = int(ts_str)
+        if time.time() - ts > SESSION_HOURS * 3600:
+            return False
+        return hmac.compare_digest(tok, _sign(ts))
+    except Exception:
+        return False
+
+def _set_auth():
+    ts = int(time.time())
+    st.query_params[_AUTH_PARAM] = f"{_sign(ts)}.{ts}"
 
 # ── Authentification ──────────────────────────────────────────────────────────
 
-if "authenticated" not in st.session_state:
-    st.session_state["authenticated"] = False
-
-# Restaurer la session depuis le cookie
-if not st.session_state["authenticated"]:
-    _stored = cookies.get("auth_expiry")
-    if _stored:
-        try:
-            if datetime.now() < datetime.fromisoformat(_stored):
-                st.session_state["authenticated"] = True
-        except ValueError:
-            pass
+if not st.session_state.get("authenticated"):
+    st.session_state["authenticated"] = _check_auth()
 
 if not st.session_state["authenticated"]:
     st.title("🔒 Portfolio Advisor")
@@ -54,13 +60,11 @@ if not st.session_state["authenticated"]:
     col, _ = st.columns([1, 2])
     with col:
         with st.form("login_form"):
-            password = st.text_input("Mot de passe", type="password", placeholder="••••••••")
+            password  = st.text_input("Mot de passe", type="password", placeholder="••••••••")
             submitted = st.form_submit_button("Se connecter", use_container_width=True)
             if submitted:
                 if password == st.secrets.get("APP_PASSWORD", ""):
-                    expiry = (datetime.now() + timedelta(hours=COOKIE_HOURS)).isoformat()
-                    cookies["auth_expiry"] = expiry
-                    cookies.save()
+                    _set_auth()
                     st.session_state["authenticated"] = True
                     st.rerun()
                 else:
@@ -75,7 +79,7 @@ def _fmt(v, dec=2):
 def _pnl_html(current, avg):
     if not avg or avg <= 0 or current is None:
         return ""
-    pct = (current - avg) / avg * 100
+    pct   = (current - avg) / avg * 100
     color = "#22c55e" if pct >= 0 else "#ef4444"
     sign  = "+" if pct >= 0 else ""
     return f' <span style="color:{color};font-size:0.8rem">({sign}{pct:.1f}%)</span>'
@@ -90,7 +94,6 @@ _bp       = btc_tab.get_bitpanda_values()
 _bp_total = _bp["total_eur"]
 _total    = (_xag_val or 0) + _bp_total
 
-# Construire les items crypto/fiat Bitpanda — crypto d'abord, fiat à la fin
 _crypto_items_html = []
 for _sym, _info in _bp["holdings"].items():
     if _info["type"] == "crypto":
@@ -106,7 +109,7 @@ for _sym, _info in _bp["holdings"].items():
             f'<span><span style="color:#64748b">{_sym}</span>&nbsp;'
             f'<b style="color:#22c55e">{_info["balance"]:,.2f} €</b></span>'
         )
-_sep = '<span style="color:#334155">│</span>'
+_sep         = '<span style="color:#334155">│</span>'
 _crypto_html = f'&nbsp;{_sep}&nbsp;'.join(_crypto_items_html) if _crypto_items_html else '<span style="color:#64748b">—</span>'
 
 st.markdown(f"""
@@ -120,7 +123,7 @@ st.markdown(f"""
   {_crypto_html}
   {_sep}
   <span style="font-weight:700;color:#94a3b8">Total&nbsp;&nbsp;<span style="color:#fbbf24;font-size:0.95rem">{_fmt(_total)}</span></span>
-  <span style="color:#475569;font-size:0.65rem;margin-left:auto">v2.2</span>
+  <span style="color:#475569;font-size:0.65rem;margin-left:auto">v2.3</span>
 </div>
 """, unsafe_allow_html=True)
 

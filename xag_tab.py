@@ -1058,9 +1058,28 @@ def render():
     # ── Mise à jour du portefeuille ───────────────────────────────────────────────
 
     st.divider()
-    st.subheader("⚙️ Mettre à jour mon portefeuille")
+    col_title, col_reset = st.columns([5, 1])
+    col_title.subheader("⚙️ Mettre à jour mon portefeuille")
 
     last_txn_date = portfolio.get("last_transaction_date", "")
+
+    with col_reset:
+        if st.button("🗑️ Reset XAG", use_container_width=True, help="Remet le solde XAG à zéro pour repartir des captures d'écran"):
+            st.session_state["confirm_reset"] = True
+
+    if st.session_state.get("confirm_reset"):
+        st.warning("⚠️ Cela va remettre ton solde XAG, prix moyen et historique de transactions à zéro. Confirmer ?")
+        col_yes, col_no, _ = st.columns([1, 1, 3])
+        if col_yes.button("✅ Oui, reset", type="primary"):
+            with st.spinner("Reset en cours..."):
+                save_portfolio(0.0, 0.0, last_transaction_date="")
+            st.session_state.pop("confirm_reset", None)
+            st.success("Solde XAG remis à zéro.")
+            st.cache_data.clear()
+            st.rerun()
+        if col_no.button("Annuler"):
+            st.session_state.pop("confirm_reset", None)
+            st.rerun()
 
     tab_screenshot, tab_csv, tab_manual = st.tabs(["📷 Capture d'écran", "📎 CSV Revolut", "✏️ Saisie manuelle"])
 
