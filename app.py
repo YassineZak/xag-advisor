@@ -4,6 +4,7 @@ import time
 import streamlit as st
 import xag_tab
 import btc_tab
+import etf_pea_tab
 
 SESSION_HOURS = 8
 _AUTH_PARAM   = "auth"
@@ -129,10 +130,13 @@ st.markdown(f"""
 
 # ── App principale ────────────────────────────────────────────────────────────
 
-tab1, tab2 = st.tabs(["🥈 Métaux", "₿ Cryptos"])
+tab1, tab2, tab3 = st.tabs(["🥈 Métaux", "₿ Cryptos", "📈 ETF & Actions PEA"])
 
 with tab1:
     xag_tab.render()
 
 with tab2:
     btc_tab.render()
+
+with tab3:
+    etf_pea_tab.render()
