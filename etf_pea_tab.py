@@ -302,6 +302,7 @@ def _render_card(item: dict, rank: int, tag_key: str):
         <div style="background:#1a1a2e;border-radius:6px;padding:3px;margin-bottom:10px">
             <div style="background:{item['color']};width:{item['score']}%;height:7px;border-radius:5px"></div>
         </div>
+    </div>
     """, unsafe_allow_html=True)
 
     c1, c2, c3, c4 = st.columns(4)
@@ -332,8 +333,6 @@ def _render_card(item: dict, rank: int, tag_key: str):
             yaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
         )
         st.plotly_chart(fig, use_container_width=True)
-
-    st.markdown("</div>", unsafe_allow_html=True)
 
 # ─── Point d'entrée ──────────────────────────────────────────────────────────
 
