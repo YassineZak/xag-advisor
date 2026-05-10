@@ -317,7 +317,11 @@ def _render_card(item: dict, rank: int, tag_key: str):
             mode="lines",
             line=dict(color=item["color"], width=1.8),
             fill="tozeroy",
-            fillcolor=item["color"] + "22",
+            fillcolor="rgba({},{},{},0.13)".format(
+                int(item["color"][1:3], 16),
+                int(item["color"][3:5], 16),
+                int(item["color"][5:7], 16),
+            ),
         ))
         fig.update_layout(
             height=100,
