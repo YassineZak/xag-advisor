@@ -290,15 +290,13 @@ def _render_card(item: dict, rank: int, tag_key: str):
                 <span style="background:#2d2d3d;padding:2px 8px;border-radius:4px;
                              font-size:11px;color:#aaa;margin-left:6px">{item['ticker']}</span>
                 <span style="background:#1e3a3a;padding:2px 8px;border-radius:4px;
-                             font-size:11px;color:#80cbc4;margin-left:4px">{tag}</span>
-                {ter_html}
+                             font-size:11px;color:#80cbc4;margin-left:4px">{tag}</span>{ter_html}
             </div>
             <div style="text-align:right">
                 <span style="font-size:15px;font-weight:bold;color:{item['color']}">{item['label']}</span><br>
                 <span style="font-size:22px;font-weight:bold;color:#ffffff">{item['price']:.2f} €</span>
             </div>
-        </div>
-        {desc_html}
+        </div>{desc_html}
         <div style="background:#1a1a2e;border-radius:6px;padding:3px;margin-bottom:10px">
             <div style="background:{item['color']};width:{item['score']}%;height:7px;border-radius:5px"></div>
         </div>
