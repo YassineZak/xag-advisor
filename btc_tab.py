@@ -583,6 +583,123 @@ def compute_crypto_pnl(
     }
 
 
+# ── Historique quotidien du portefeuille ──────────────────────────────────────
+
+@st.cache_data(ttl=3600)
+def _fetch_crypto_history_eur(symbols: tuple, start_date: str, end_date: str) -> pd.DataFrame:
+    """
+    Prix EUR quotidiens (clôture) en batch pour une liste de cryptos via yfinance.
+    Retourne un DataFrame index=date naïve, colonnes=symboles. Cache 1h.
+    """
+    if not symbols:
+        return pd.DataFrame()
+
+    tickers = [f"{s}-EUR" for s in symbols]
+    try:
+        if len(tickers) == 1:
+            raw = yf.Ticker(tickers[0]).history(start=start_date, end=end_date)
+            if raw.empty:
+                return pd.DataFrame()
+            df = pd.DataFrame({symbols[0]: raw["Close"]})
+        else:
+            raw = yf.download(
+                tickers, start=start_date, end=end_date,
+                auto_adjust=True, progress=False,
+            )
+            df = raw["Close"].copy()
+            df.columns = [c.replace("-EUR", "") for c in df.columns]
+    except Exception:
+        return pd.DataFrame()
+
+    idx = pd.DatetimeIndex(df.index)
+    df.index = idx.tz_localize(None) if idx.tz is not None else idx
+    df.index = df.index.normalize()
+    return df
+
+
+def compute_portfolio_history(trades: list, wallet_txs: list) -> pd.DataFrame:
+    """
+    Reconstruit la valeur quotidienne du portefeuille crypto + investi net cumulé,
+    depuis la première transaction jusqu'à aujourd'hui.
+
+    Pour chaque jour :
+        - Solde par crypto = somme cumulée des entrées (buy + deposit) − sorties
+        - Valeur = solde × prix EUR du jour (clôture, ffill week-ends)
+        - Investi net cumulé = somme cumulée des EUR engagés (buy + deposit − sell − withdraw)
+
+    Retourne DataFrame [value_eur, net_invested_eur, pnl_eur] indexé quotidien.
+    """
+    qty_events: list = []   # (date, sym, qty_delta)
+    cash_events: list = []  # (date, eur_delta)
+
+    def _to_naive_day(s: str):
+        return pd.to_datetime(s, utc=True).tz_localize(None).normalize()
+
+    for t in trades:
+        if not t.get("date") or not t.get("symbol"):
+            continue
+        date = _to_naive_day(t["date"])
+        if t["type"] == "buy":
+            qty_events.append((date, t["symbol"], t["amount_crypto"]))
+            cash_events.append((date, t["amount_eur"]))
+        elif t["type"] == "sell":
+            qty_events.append((date, t["symbol"], -t["amount_crypto"]))
+            cash_events.append((date, -t["amount_eur"]))
+
+    for w in wallet_txs:
+        if not w.get("date") or not w.get("symbol"):
+            continue
+        date = _to_naive_day(w["date"])
+        sign = 1 if w["direction"] == "in" else -1
+        qty_events.append((date, w["symbol"], sign * w["amount_crypto"]))
+        cash_events.append((date, sign * w["amount_eur"]))
+
+    if not qty_events:
+        return pd.DataFrame()
+
+    first_date = min(e[0] for e in qty_events)
+    today = pd.Timestamp.now().normalize()
+    dates = pd.date_range(first_date, today, freq="D")
+
+    symbols = sorted({e[1] for e in qty_events})
+
+    # Holdings cumulés par crypto par jour
+    holdings = pd.DataFrame(0.0, index=dates, columns=symbols)
+    for date, sym, delta in qty_events:
+        if date in holdings.index:
+            holdings.loc[date:, sym] = holdings.loc[date:, sym] + delta
+
+    # Prix historiques (batch + cached)
+    prices_raw = _fetch_crypto_history_eur(
+        tuple(symbols),
+        first_date.strftime("%Y-%m-%d"),
+        (today + pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
+    )
+
+    prices = pd.DataFrame(0.0, index=dates, columns=symbols)
+    if not prices_raw.empty:
+        aligned = prices_raw.reindex(dates).ffill()
+        for s in symbols:
+            if s in aligned.columns:
+                prices[s] = aligned[s].fillna(0.0)
+
+    values = holdings * prices
+    total_value = values.sum(axis=1)
+
+    # Investi net cumulé
+    cash_series = pd.Series(0.0, index=dates)
+    for date, delta in cash_events:
+        if date in cash_series.index:
+            cash_series.loc[date:] = cash_series.loc[date:] + delta
+
+    result = pd.DataFrame({
+        "value_eur": total_value,
+        "net_invested_eur": cash_series,
+    })
+    result["pnl_eur"] = result["value_eur"] - result["net_invested_eur"]
+    return result
+
+
 # ── Fear & Greed Index ────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=3600)
@@ -910,6 +1027,92 @@ def render():
             )
             df_tx = df_tx[["Date", "Type", "Crypto", "Quantité", "Montant (€)", "Prix (€)"]]
             st.dataframe(df_tx, use_container_width=True, hide_index=True, height=400)
+
+        # ── Évolution quotidienne du portefeuille ─────────────────────────────
+        with st.spinner("Reconstruction de l'historique quotidien..."):
+            history = compute_portfolio_history(trades, wallet_txs)
+
+        if not history.empty and len(history) > 1:
+            st.divider()
+            st.subheader("📈 Évolution quotidienne du portefeuille")
+            st.caption(
+                "Reconstruction rétroactive : pour chaque jour, solde détenu × prix EUR de clôture. "
+                "La ligne pointillée montre ce que tu as engagé (acheté + déposé − revendu − retiré)."
+            )
+
+            last_value = float(history["value_eur"].iloc[-1])
+            last_net = float(history["net_invested_eur"].iloc[-1])
+            last_pnl = float(history["pnl_eur"].iloc[-1])
+            ath = float(history["value_eur"].max())
+            ath_date = history["value_eur"].idxmax().strftime("%d/%m/%Y")
+            atl = float(history["value_eur"][history["value_eur"] > 0].min()) if (history["value_eur"] > 0).any() else 0.0
+
+            # Variation 24h / 7j / 30j
+            def _var(days: int) -> str:
+                if len(history) <= days:
+                    return "—"
+                past = float(history["value_eur"].iloc[-(days + 1)])
+                if past <= 0:
+                    return "—"
+                pct = (last_value - past) / past * 100
+                return f"{pct:+.1f}%"
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("ATH portefeuille", f"{ath:,.2f} €", help=f"Atteint le {ath_date}")
+            c2.metric("Variation 24h", _var(1))
+            c3.metric("Variation 7j", _var(7))
+            c4.metric("Variation 30j", _var(30))
+
+            fig_hist = go.Figure()
+            fig_hist.add_trace(go.Scatter(
+                x=history.index, y=history["value_eur"],
+                mode="lines", line=dict(color="#22c55e", width=2.5),
+                fill="tozeroy", fillcolor="rgba(34,197,94,0.08)",
+                name="Valeur portefeuille",
+                hovertemplate="<b>%{x|%d %b %Y}</b><br>Valeur : %{y:,.2f} €<extra></extra>",
+            ))
+            fig_hist.add_trace(go.Scatter(
+                x=history.index, y=history["net_invested_eur"],
+                mode="lines", line=dict(color="#f59e0b", width=1.5, dash="dot"),
+                name="Investi net",
+                hovertemplate="<b>%{x|%d %b %Y}</b><br>Investi : %{y:,.2f} €<extra></extra>",
+            ))
+            fig_hist.update_layout(
+                template="plotly_dark", height=420,
+                legend=dict(orientation="h", y=1.02, xanchor="right", x=1),
+                margin=dict(l=10, r=10, t=10, b=10),
+                hovermode="x unified",
+            )
+            fig_hist.update_yaxes(title_text="EUR")
+            st.plotly_chart(fig_hist, use_container_width=True)
+
+            # Chart P&L cumulé
+            fig_pnl = go.Figure()
+            pnl_pos = history["pnl_eur"].where(history["pnl_eur"] >= 0)
+            pnl_neg = history["pnl_eur"].where(history["pnl_eur"] < 0)
+            fig_pnl.add_trace(go.Scatter(
+                x=history.index, y=pnl_pos,
+                mode="lines", line=dict(color="#22c55e", width=2),
+                fill="tozeroy", fillcolor="rgba(34,197,94,0.15)",
+                name="P&L positif", connectgaps=False,
+                hovertemplate="<b>%{x|%d %b %Y}</b><br>P&L : %{y:+,.2f} €<extra></extra>",
+            ))
+            fig_pnl.add_trace(go.Scatter(
+                x=history.index, y=pnl_neg,
+                mode="lines", line=dict(color="#ef4444", width=2),
+                fill="tozeroy", fillcolor="rgba(239,68,68,0.15)",
+                name="P&L négatif", connectgaps=False,
+                hovertemplate="<b>%{x|%d %b %Y}</b><br>P&L : %{y:+,.2f} €<extra></extra>",
+            ))
+            fig_pnl.add_hline(y=0, line_color="#475569", line_width=1)
+            fig_pnl.update_layout(
+                template="plotly_dark", height=220,
+                showlegend=False,
+                margin=dict(l=10, r=10, t=10, b=10),
+                hovermode="x unified",
+                title=dict(text="P&L quotidien (€)", font=dict(size=14), x=0.01),
+            )
+            st.plotly_chart(fig_pnl, use_container_width=True)
 
     # ── Bloc 2 : Opportunités long terme ─────────────────────────────────────
     st.subheader("🏦 Top 5 — Cryptos sûres (long terme)")
