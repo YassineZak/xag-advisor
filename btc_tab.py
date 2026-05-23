@@ -422,22 +422,30 @@ def compute_crypto_pnl(trades: list, current_prices_eur: dict, balances: dict) -
         a = per_asset.setdefault(sym, {"bought": 0.0, "sold": 0.0})
         balance = float(balances.get(sym, 0.0))
         price = float(current_prices_eur.get(sym, 0.0))
+        net_invested = a["bought"] - a["sold"]
         a["balance"] = balance
         a["current_value"] = balance * price
+        a["net_invested"] = net_invested
         a["pnl"] = a["current_value"] + a["sold"] - a["bought"]
-        a["pnl_pct"] = (a["pnl"] / a["bought"] * 100) if a["bought"] > 0 else 0.0
+        # % vs investi net si > 0, sinon vs total acheté
+        denom = net_invested if net_invested > 0 else a["bought"]
+        a["pnl_pct"] = (a["pnl"] / denom * 100) if denom > 0 else 0.0
         total_bought += a["bought"]
         total_sold += a["sold"]
         total_current += a["current_value"]
 
+    total_net = total_bought - total_sold
+    total_pnl = total_current + total_sold - total_bought
+    total_denom = total_net if total_net > 0 else total_bought
     return {
         "per_asset": per_asset,
         "total": {
             "bought": total_bought,
             "sold": total_sold,
+            "net_invested": total_net,
             "current_value": total_current,
-            "pnl": total_current + total_sold - total_bought,
-            "pnl_pct": ((total_current + total_sold - total_bought) / total_bought * 100) if total_bought > 0 else 0.0,
+            "pnl": total_pnl,
+            "pnl_pct": (total_pnl / total_denom * 100) if total_denom > 0 else 0.0,
         },
     }
 
@@ -679,17 +687,28 @@ def render():
         pnl = compute_crypto_pnl(trades, crypto_prices_eur, crypto_balances)
         t_pnl = pnl["total"]
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total investi", f"{t_pnl['bought']:,.2f} €")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric(
+            "Total acheté",
+            f"{t_pnl['bought']:,.2f} €",
+            help="Somme de tous tes achats crypto (inclut les montants ensuite revendus ou swapés).",
+        )
         c2.metric(
             "Total revendu",
             f"{t_pnl['sold']:,.2f} €" if t_pnl["sold"] > 0 else "0,00 €",
+            help="Somme de toutes tes ventes crypto (inclut les swaps sortants).",
         )
-        c3.metric("Valeur actuelle", f"{t_pnl['current_value']:,.2f} €")
-        c4.metric(
+        c3.metric(
+            "Investi net",
+            f"{t_pnl['net_invested']:,.2f} €",
+            help="Acheté − Revendu : ce que tu as réellement engagé en crypto.",
+        )
+        c4.metric("Valeur actuelle", f"{t_pnl['current_value']:,.2f} €")
+        c5.metric(
             "P&L global",
             f"{t_pnl['pnl']:+,.2f} €",
-            delta=f"{t_pnl['pnl_pct']:+.1f}%" if t_pnl["bought"] > 0 else None,
+            delta=f"{t_pnl['pnl_pct']:+.1f}%" if (t_pnl["net_invested"] > 0 or t_pnl["bought"] > 0) else None,
+            help="Valeur actuelle + Revendu − Acheté. Le % est calculé sur l'investi net.",
         )
 
         # Détail par crypto
