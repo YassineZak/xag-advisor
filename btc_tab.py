@@ -326,6 +326,122 @@ def get_bitpanda_values() -> dict:
     return {"holdings": holdings, "total_eur": total_eur}
 
 
+# ── Historique des transactions Bitpanda ──────────────────────────────────────
+
+@st.cache_data(ttl=600)
+def get_bitpanda_trades() -> list:
+    """
+    Récupère toutes les transactions crypto Bitpanda via /v1/trades (paginé).
+    Retourne une liste de dicts triés du plus récent au plus ancien :
+        {date, symbol, type, amount_crypto, amount_eur, price_eur, is_swap, is_savings}
+    Cache 10 minutes.
+    """
+    api_key = st.secrets.get("BITPANDA_API_KEY", "")
+    if not api_key:
+        return []
+
+    headers = {"X-API-KEY": api_key}
+    trades: list = []
+    page = 1
+    page_size = 500
+
+    while True:
+        try:
+            resp = requests.get(
+                "https://api.bitpanda.com/v1/trades",
+                headers=headers,
+                params={"page": page, "page_size": page_size},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception:
+            break
+
+        rows = payload.get("data", [])
+        if not rows:
+            break
+
+        for t in rows:
+            a = t.get("attributes", {})
+            if a.get("status") != "finished":
+                continue
+            try:
+                amount_fiat = float(a.get("amount_fiat", 0) or 0)
+                fiat_to_eur = float(a.get("fiat_to_eur_rate", 1) or 1)
+                price = float(a.get("price", 0) or 0)
+                trades.append({
+                    "date": a.get("time", {}).get("date_iso8601", ""),
+                    "symbol": a.get("cryptocoin_symbol", ""),
+                    "type": a.get("type", ""),  # "buy" ou "sell"
+                    "amount_crypto": float(a.get("amount_cryptocoin", 0) or 0),
+                    "amount_eur": amount_fiat * fiat_to_eur,
+                    "price_eur": price * fiat_to_eur,
+                    "is_swap": bool(a.get("is_swap", False)),
+                    "is_savings": bool(a.get("is_savings", False)),
+                })
+            except (TypeError, ValueError):
+                continue
+
+        if len(rows) < page_size:
+            break
+        page += 1
+        if page > 50:  # garde-fou
+            break
+
+    trades.sort(key=lambda x: x["date"], reverse=True)
+    return trades
+
+
+def compute_crypto_pnl(trades: list, current_prices_eur: dict, balances: dict) -> dict:
+    """
+    Calcule le P&L par crypto et global à partir des trades.
+
+    Méthode cash-flow simple :
+        P&L = valeur_actuelle + total_revendu - total_acheté
+
+    Retourne :
+        {
+            "per_asset": {sym: {bought, sold, balance, current_value, pnl, pnl_pct}},
+            "total":     {bought, sold, current_value, pnl, pnl_pct}
+        }
+    """
+    per_asset: dict = {}
+    for t in trades:
+        sym = t["symbol"]
+        if not sym:
+            continue
+        a = per_asset.setdefault(sym, {"bought": 0.0, "sold": 0.0})
+        if t["type"] == "buy":
+            a["bought"] += t["amount_eur"]
+        elif t["type"] == "sell":
+            a["sold"] += t["amount_eur"]
+
+    total_bought = total_sold = total_current = 0.0
+    for sym in set(per_asset.keys()) | set(balances.keys()):
+        a = per_asset.setdefault(sym, {"bought": 0.0, "sold": 0.0})
+        balance = float(balances.get(sym, 0.0))
+        price = float(current_prices_eur.get(sym, 0.0))
+        a["balance"] = balance
+        a["current_value"] = balance * price
+        a["pnl"] = a["current_value"] + a["sold"] - a["bought"]
+        a["pnl_pct"] = (a["pnl"] / a["bought"] * 100) if a["bought"] > 0 else 0.0
+        total_bought += a["bought"]
+        total_sold += a["sold"]
+        total_current += a["current_value"]
+
+    return {
+        "per_asset": per_asset,
+        "total": {
+            "bought": total_bought,
+            "sold": total_sold,
+            "current_value": total_current,
+            "pnl": total_current + total_sold - total_bought,
+            "pnl_pct": ((total_current + total_sold - total_bought) / total_bought * 100) if total_bought > 0 else 0.0,
+        },
+    }
+
+
 # ── Fear & Greed Index ────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=3600)
@@ -543,6 +659,81 @@ def render():
                 cols[i].metric(f"{symbol}", f"{info['balance']:.6f}", delta=price_str if price_str else None)
     else:
         st.info("Aucun avoir détecté sur Bitpanda pour l'instant.")
+
+    st.divider()
+
+    # ── Bloc P&L crypto depuis le début ──────────────────────────────────────
+    st.subheader("💰 P&L Crypto depuis le début")
+    st.caption("Calculé à partir de l'historique complet de tes transactions Bitpanda (achats, ventes, swaps).")
+
+    with st.spinner("Récupération de l'historique des transactions..."):
+        trades = get_bitpanda_trades()
+
+    if not trades:
+        if st.secrets.get("BITPANDA_API_KEY", ""):
+            st.info(
+                "Aucune transaction récupérée. Vérifie que ta clé API Bitpanda a le scope **READ_TRADES** activé."
+            )
+        # sinon le warning sur la clé est déjà affiché plus haut
+    else:
+        pnl = compute_crypto_pnl(trades, crypto_prices_eur, crypto_balances)
+        t_pnl = pnl["total"]
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total investi", f"{t_pnl['bought']:,.2f} €")
+        c2.metric(
+            "Total revendu",
+            f"{t_pnl['sold']:,.2f} €" if t_pnl["sold"] > 0 else "0,00 €",
+        )
+        c3.metric("Valeur actuelle", f"{t_pnl['current_value']:,.2f} €")
+        c4.metric(
+            "P&L global",
+            f"{t_pnl['pnl']:+,.2f} €",
+            delta=f"{t_pnl['pnl_pct']:+.1f}%" if t_pnl["bought"] > 0 else None,
+        )
+
+        # Détail par crypto
+        with st.expander("📊 Détail par crypto", expanded=True):
+            rows = []
+            for sym, a in sorted(
+                pnl["per_asset"].items(),
+                key=lambda x: -(x[1]["current_value"] + x[1]["sold"]),
+            ):
+                if a["bought"] == 0 and a["sold"] == 0 and a.get("balance", 0) == 0:
+                    continue
+                rows.append({
+                    "Crypto": sym,
+                    "Investi (€)": f"{a['bought']:,.2f}",
+                    "Revendu (€)": f"{a['sold']:,.2f}" if a["sold"] > 0 else "—",
+                    "Solde": f"{a['balance']:.6f}" if a.get("balance", 0) > 0 else "—",
+                    "Valeur actuelle (€)": f"{a['current_value']:,.2f}" if a["current_value"] > 0 else "—",
+                    "P&L (€)": f"{a['pnl']:+,.2f}",
+                    "P&L (%)": f"{a['pnl_pct']:+.1f}%" if a["bought"] > 0 else "—",
+                })
+            if rows:
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            else:
+                st.caption("Aucune position à afficher.")
+
+        # Historique des transactions
+        with st.expander(f"📜 Historique des transactions ({len(trades)})", expanded=False):
+            df_tx = pd.DataFrame(trades)
+            df_tx["Date"] = pd.to_datetime(df_tx["date"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M")
+            df_tx["Type"] = df_tx.apply(
+                lambda r: (
+                    ("🔄 Swap " if r["is_swap"] else ("🐷 Épargne " if r["is_savings"] else ""))
+                    + ("📥 Achat" if r["type"] == "buy" else "📤 Vente")
+                ),
+                axis=1,
+            )
+            df_tx["Quantité"] = df_tx["amount_crypto"].apply(lambda x: f"{x:.6f}")
+            df_tx["Montant (€)"] = df_tx["amount_eur"].apply(lambda x: f"{x:,.2f}")
+            df_tx["Prix (€)"] = df_tx["price_eur"].apply(
+                lambda x: f"{x:,.4f}" if x < 1 else f"{x:,.2f}"
+            )
+            df_tx = df_tx[["Date", "Type", "symbol", "Quantité", "Montant (€)", "Prix (€)"]]
+            df_tx = df_tx.rename(columns={"symbol": "Crypto"})
+            st.dataframe(df_tx, use_container_width=True, hide_index=True, height=400)
 
     # ── Bloc 2 : Opportunités long terme ─────────────────────────────────────
     st.subheader("🏦 Top 5 — Cryptos sûres (long terme)")
