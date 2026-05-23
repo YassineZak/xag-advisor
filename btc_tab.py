@@ -328,6 +328,113 @@ def get_bitpanda_values() -> dict:
 
 # ── Historique des transactions Bitpanda ──────────────────────────────────────
 
+@st.cache_data(ttl=86400)
+def _historical_price_eur(symbol: str, date_only: str) -> float:
+    """Prix EUR d'une crypto à une date donnée (YYYY-MM-DD). Cache 24h."""
+    if not symbol or not date_only:
+        return 0.0
+    try:
+        target = pd.to_datetime(date_only).normalize()
+        hist = yf.Ticker(f"{symbol}-EUR").history(
+            start=(target - pd.Timedelta(days=3)).strftime("%Y-%m-%d"),
+            end=(target + pd.Timedelta(days=2)).strftime("%Y-%m-%d"),
+        )
+        if not hist.empty:
+            return float(hist["Close"].iloc[-1])
+    except Exception:
+        pass
+    return 0.0
+
+
+@st.cache_data(ttl=600)
+def get_bitpanda_wallet_txs() -> list:
+    """
+    Récupère les dépôts/retraits on-chain crypto via /v1/wallets/transactions.
+    Ces mouvements (transfert depuis Revolut, retrait vers Ledger, etc.) ne sont
+    PAS dans /v1/trades — il faut les compter séparément pour un P&L correct.
+
+    EUR value : champ amount_eur Bitpanda si dispo, sinon prix historique yfinance.
+    Retourne [{date, symbol, direction ('in'|'out'), amount_crypto, amount_eur}].
+    Cache 10 min.
+    """
+    api_key = st.secrets.get("BITPANDA_API_KEY", "")
+    if not api_key:
+        return []
+
+    headers = {"X-API-KEY": api_key}
+    txs: list = []
+    page = 1
+    page_size = 500
+
+    while True:
+        try:
+            resp = requests.get(
+                "https://api.bitpanda.com/v1/wallets/transactions",
+                headers=headers,
+                params={"page": page, "page_size": page_size},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception:
+            break
+
+        rows = payload.get("data", [])
+        if not rows:
+            break
+
+        for t in rows:
+            a = t.get("attributes", {})
+            direction_raw = a.get("in_or_out", "")
+            tx_type = a.get("type", "")
+
+            if tx_type not in ("deposit", "withdrawal"):
+                continue
+            if direction_raw not in ("incoming", "outgoing"):
+                continue
+
+            symbol = a.get("cryptocoin_symbol", "")
+            if not symbol:
+                continue
+
+            try:
+                amount_crypto = float(a.get("amount", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if amount_crypto <= 0:
+                continue
+
+            date_str = a.get("time", {}).get("date_iso8601", "")
+
+            amount_eur = 0.0
+            try:
+                ae = a.get("amount_eur")
+                if ae:
+                    amount_eur = float(ae)
+            except (TypeError, ValueError):
+                pass
+            if amount_eur <= 0:
+                price = _historical_price_eur(symbol, date_str[:10] if date_str else "")
+                amount_eur = amount_crypto * price
+
+            txs.append({
+                "date": date_str,
+                "symbol": symbol,
+                "direction": "in" if direction_raw == "incoming" else "out",
+                "amount_crypto": amount_crypto,
+                "amount_eur": amount_eur,
+            })
+
+        if len(rows) < page_size:
+            break
+        page += 1
+        if page > 50:
+            break
+
+    txs.sort(key=lambda x: x["date"], reverse=True)
+    return txs
+
+
 @st.cache_data(ttl=600)
 def get_bitpanda_trades() -> list:
     """
@@ -393,33 +500,60 @@ def get_bitpanda_trades() -> list:
     return trades
 
 
-def compute_crypto_pnl(trades: list, current_prices_eur: dict, balances: dict) -> dict:
+def compute_crypto_pnl(
+    trades: list,
+    wallet_txs: list,
+    current_prices_eur: dict,
+    balances: dict,
+) -> dict:
     """
-    Calcule le P&L par crypto et global à partir des trades.
+    Calcule le P&L par crypto et global à partir des trades + transferts on-chain.
 
     Méthode cash-flow simple :
-        P&L = valeur_actuelle + total_revendu - total_acheté
+        Acheté  = trades buy  + dépôts entrants  (valorisés EUR au moment du transfert)
+        Revendu = trades sell + retraits sortants (valorisés EUR au moment du transfert)
+        P&L     = valeur_actuelle + revendu − acheté
 
-    Retourne :
-        {
-            "per_asset": {sym: {bought, sold, balance, current_value, pnl, pnl_pct}},
-            "total":     {bought, sold, current_value, pnl, pnl_pct}
-        }
+    Les transferts entrants comptent comme un achat à la valeur EUR du jour : ils
+    représentent de la crypto acquise hors Bitpanda (Revolut, Ledger, etc.).
+    Les retraits sortants comptent comme une vente virtuelle au prix du marché.
     """
     per_asset: dict = {}
+
+    def _bucket(sym: str) -> dict:
+        return per_asset.setdefault(sym, {
+            "bought": 0.0, "sold": 0.0,
+            "deposited_eur": 0.0, "withdrawn_eur": 0.0,
+            "deposited_qty": 0.0, "withdrawn_qty": 0.0,
+        })
+
     for t in trades:
         sym = t["symbol"]
         if not sym:
             continue
-        a = per_asset.setdefault(sym, {"bought": 0.0, "sold": 0.0})
+        a = _bucket(sym)
         if t["type"] == "buy":
             a["bought"] += t["amount_eur"]
         elif t["type"] == "sell":
             a["sold"] += t["amount_eur"]
 
+    for w in wallet_txs:
+        sym = w["symbol"]
+        if not sym:
+            continue
+        a = _bucket(sym)
+        if w["direction"] == "in":
+            a["bought"] += w["amount_eur"]
+            a["deposited_eur"] += w["amount_eur"]
+            a["deposited_qty"] += w["amount_crypto"]
+        elif w["direction"] == "out":
+            a["sold"] += w["amount_eur"]
+            a["withdrawn_eur"] += w["amount_eur"]
+            a["withdrawn_qty"] += w["amount_crypto"]
+
     total_bought = total_sold = total_current = 0.0
     for sym in set(per_asset.keys()) | set(balances.keys()):
-        a = per_asset.setdefault(sym, {"bought": 0.0, "sold": 0.0})
+        a = _bucket(sym)
         balance = float(balances.get(sym, 0.0))
         price = float(current_prices_eur.get(sym, 0.0))
         net_invested = a["bought"] - a["sold"]
@@ -427,7 +561,6 @@ def compute_crypto_pnl(trades: list, current_prices_eur: dict, balances: dict) -
         a["current_value"] = balance * price
         a["net_invested"] = net_invested
         a["pnl"] = a["current_value"] + a["sold"] - a["bought"]
-        # % vs investi net si > 0, sinon vs total acheté
         denom = net_invested if net_invested > 0 else a["bought"]
         a["pnl_pct"] = (a["pnl"] / denom * 100) if denom > 0 else 0.0
         total_bought += a["bought"]
@@ -676,15 +809,17 @@ def render():
 
     with st.spinner("Récupération de l'historique des transactions..."):
         trades = get_bitpanda_trades()
+        wallet_txs = get_bitpanda_wallet_txs()
 
-    if not trades:
+    if not trades and not wallet_txs:
         if st.secrets.get("BITPANDA_API_KEY", ""):
             st.info(
-                "Aucune transaction récupérée. Vérifie que ta clé API Bitpanda a le scope **READ_TRADES** activé."
+                "Aucune transaction récupérée. Vérifie que ta clé API Bitpanda a les scopes "
+                "**READ_TRADES** et **READ_TRANSACTIONS** activés."
             )
         # sinon le warning sur la clé est déjà affiché plus haut
     else:
-        pnl = compute_crypto_pnl(trades, crypto_prices_eur, crypto_balances)
+        pnl = compute_crypto_pnl(trades, wallet_txs, crypto_prices_eur, crypto_balances)
         t_pnl = pnl["total"]
 
         c1, c2, c3, c4, c5 = st.columns(5)
@@ -734,24 +869,46 @@ def render():
             else:
                 st.caption("Aucune position à afficher.")
 
-        # Historique des transactions
-        with st.expander(f"📜 Historique des transactions ({len(trades)})", expanded=False):
-            df_tx = pd.DataFrame(trades)
-            df_tx["Date"] = pd.to_datetime(df_tx["date"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M")
-            df_tx["Type"] = df_tx.apply(
-                lambda r: (
-                    ("🔄 Swap " if r["is_swap"] else ("🐷 Épargne " if r["is_savings"] else ""))
-                    + ("📥 Achat" if r["type"] == "buy" else "📤 Vente")
-                ),
-                axis=1,
-            )
+        # Historique des transactions (trades + transferts on-chain combinés)
+        display_rows = []
+        for tr in trades:
+            type_lbl = ("🔄 Swap " if tr["is_swap"] else ("🐷 Épargne " if tr["is_savings"] else ""))
+            type_lbl += ("📥 Achat" if tr["type"] == "buy" else "📤 Vente")
+            display_rows.append({
+                "Date": tr["date"],
+                "Type": type_lbl,
+                "Crypto": tr["symbol"],
+                "amount_crypto": tr["amount_crypto"],
+                "amount_eur": tr["amount_eur"],
+                "price_eur": tr["price_eur"],
+            })
+        for w in wallet_txs:
+            type_lbl = "📨 Dépôt externe" if w["direction"] == "in" else "📩 Retrait externe"
+            unit_price = (w["amount_eur"] / w["amount_crypto"]) if w["amount_crypto"] > 0 else 0.0
+            display_rows.append({
+                "Date": w["date"],
+                "Type": type_lbl,
+                "Crypto": w["symbol"],
+                "amount_crypto": w["amount_crypto"],
+                "amount_eur": w["amount_eur"],
+                "price_eur": unit_price,
+            })
+        display_rows.sort(key=lambda x: x["Date"], reverse=True)
+
+        total_txs = len(display_rows)
+        n_transfers = len(wallet_txs)
+        title_extra = f" · dont {n_transfers} transfert{'s' if n_transfers > 1 else ''} on-chain" if n_transfers else ""
+        with st.expander(f"📜 Historique des transactions ({total_txs}{title_extra})", expanded=False):
+            df_tx = pd.DataFrame(display_rows)
+            df_tx["Date"] = pd.to_datetime(df_tx["Date"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M")
             df_tx["Quantité"] = df_tx["amount_crypto"].apply(lambda x: f"{x:.6f}")
-            df_tx["Montant (€)"] = df_tx["amount_eur"].apply(lambda x: f"{x:,.2f}")
-            df_tx["Prix (€)"] = df_tx["price_eur"].apply(
-                lambda x: f"{x:,.4f}" if x < 1 else f"{x:,.2f}"
+            df_tx["Montant (€)"] = df_tx["amount_eur"].apply(
+                lambda x: f"{x:,.2f}" if x > 0 else "—"
             )
-            df_tx = df_tx[["Date", "Type", "symbol", "Quantité", "Montant (€)", "Prix (€)"]]
-            df_tx = df_tx.rename(columns={"symbol": "Crypto"})
+            df_tx["Prix (€)"] = df_tx["price_eur"].apply(
+                lambda x: ("—" if x <= 0 else (f"{x:,.4f}" if x < 1 else f"{x:,.2f}"))
+            )
+            df_tx = df_tx[["Date", "Type", "Crypto", "Quantité", "Montant (€)", "Prix (€)"]]
             st.dataframe(df_tx, use_container_width=True, hide_index=True, height=400)
 
     # ── Bloc 2 : Opportunités long terme ─────────────────────────────────────
