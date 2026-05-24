@@ -1047,21 +1047,26 @@ def render():
             ath_date = history["value_eur"].idxmax().strftime("%d/%m/%Y")
             atl = float(history["value_eur"][history["value_eur"] > 0].min()) if (history["value_eur"] > 0).any() else 0.0
 
-            # Variation 24h / 7j / 30j
-            def _var(days: int) -> str:
+            # Variation 24h / 7j / 30j (€ et %)
+            def _var(days: int):
                 if len(history) <= days:
-                    return "—"
+                    return "—", None
                 past = float(history["value_eur"].iloc[-(days + 1)])
                 if past <= 0:
-                    return "—"
-                pct = (last_value - past) / past * 100
-                return f"{pct:+.1f}%"
+                    return "—", None
+                eur = last_value - past
+                pct = eur / past * 100
+                return f"{eur:+,.2f} €", f"{pct:+.1f}%"
+
+            v_24h, p_24h = _var(1)
+            v_7j,  p_7j  = _var(7)
+            v_30j, p_30j = _var(30)
 
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("ATH portefeuille", f"{ath:,.2f} €", help=f"Atteint le {ath_date}")
-            c2.metric("Variation 24h", _var(1))
-            c3.metric("Variation 7j", _var(7))
-            c4.metric("Variation 30j", _var(30))
+            c2.metric("Variation 24h", v_24h, delta=p_24h)
+            c3.metric("Variation 7j",  v_7j,  delta=p_7j)
+            c4.metric("Variation 30j", v_30j, delta=p_30j)
 
             fig_hist = go.Figure()
             fig_hist.add_trace(go.Scatter(
