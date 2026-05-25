@@ -2,13 +2,15 @@ import hmac
 import hashlib
 import time
 import streamlit as st
+import streamlit.components.v1 as components
 import xag_tab
 import btc_tab
 import etf_pea_tab
 
-SESSION_DAYS = 365  # 1 an : la PWA iOS bookmarke l'URL avec le token → tient ~1 an
+SESSION_DAYS = 365  # 1 an
 SESSION_SEC  = SESSION_DAYS * 24 * 3600
 _AUTH_PARAM  = "auth"
+_STORAGE_KEY = "xag_auth_v3"
 
 st.set_page_config(
     page_title="Portfolio Advisor",
@@ -56,6 +58,100 @@ def _set_auth():
     ts = int(time.time())
     st.query_params[_AUTH_PARAM] = f"{_sign(ts)}.{ts}"
 
+
+def _inject_storage_fallback_js():
+    """
+    Restauration agressive multi-storage : localStorage + cookies.
+    Pour les cas où le manifest Streamlit écrase l'URL bookmarkée de la PWA iOS.
+    Tente d'accéder au window.top (parent réel) pour partager le storage.
+    """
+    components.html(f"""
+    <script>
+    (function() {{
+      const KEY = '{_STORAGE_KEY}';
+      const PARAM = '{_AUTH_PARAM}';
+      const MAX_AGE_MS = {SESSION_SEC} * 1000;
+
+      function getCtx() {{
+        try {{
+          if (window.top && window.top.localStorage) return window.top;
+        }} catch (e) {{}}
+        try {{
+          if (window.parent && window.parent.localStorage) return window.parent;
+        }} catch (e) {{}}
+        return window;
+      }}
+
+      function isValid(t) {{
+        if (!t || !t.includes('.')) return false;
+        const ts = parseInt(t.split('.').pop()) * 1000;
+        return !isNaN(ts) && (Date.now() - ts) < MAX_AGE_MS;
+      }}
+
+      function readToken(ctx) {{
+        try {{
+          const v = ctx.localStorage.getItem(KEY);
+          if (v && isValid(v)) return v;
+        }} catch (e) {{}}
+        try {{
+          const m = ctx.document.cookie.match(new RegExp('(?:^|; )' + KEY + '=([^;]*)'));
+          if (m) {{
+            const v = decodeURIComponent(m[1]);
+            if (isValid(v)) return v;
+          }}
+        }} catch (e) {{}}
+        return null;
+      }}
+
+      function writeToken(ctx, v) {{
+        try {{ ctx.localStorage.setItem(KEY, v); }} catch (e) {{}}
+        try {{
+          const exp = new Date(Date.now() + MAX_AGE_MS).toUTCString();
+          ctx.document.cookie = KEY + '=' + encodeURIComponent(v) +
+            '; expires=' + exp + '; path=/; SameSite=Lax; Secure';
+        }} catch (e) {{}}
+      }}
+
+      try {{
+        const ctx = getCtx();
+        const loc = ctx.location;
+        const params = new URLSearchParams(loc.search);
+        const urlAuth = params.get(PARAM);
+
+        if (urlAuth && isValid(urlAuth)) {{
+          writeToken(ctx, urlAuth);
+        }} else {{
+          const stored = readToken(ctx);
+          if (stored) {{
+            params.set(PARAM, stored);
+            loc.replace(loc.origin + loc.pathname + '?' + params.toString());
+          }}
+        }}
+      }} catch (e) {{ console.error('Auth restore failed:', e); }}
+    }})();
+    </script>
+    """, height=0)
+
+
+def _get_current_url_diagnostic() -> str:
+    """Renvoie l'URL courante détectable côté serveur (pour diagnostic PWA)."""
+    try:
+        url = st.context.url
+        if url:
+            return url
+    except Exception:
+        pass
+    try:
+        host = st.context.headers.get("Host", "?")
+        params = "&".join(f"{k}={v}" for k, v in st.query_params.to_dict().items())
+        return f"https://{host}/" + (f"?{params}" if params else "")
+    except Exception:
+        return "(URL non détectable côté serveur)"
+
+
+# Injection au plus tôt : tente de restaurer le token avant l'écran de login
+_inject_storage_fallback_js()
+
 # ── Authentification ──────────────────────────────────────────────────────────
 
 if not st.session_state.get("authenticated"):
@@ -64,6 +160,22 @@ if not st.session_state.get("authenticated"):
 if not st.session_state["authenticated"]:
     st.title("🔒 Portfolio Advisor")
     st.markdown("---")
+
+    # Diagnostic : montre l'URL avec laquelle la PWA a été lancée
+    current_url = _get_current_url_diagnostic()
+    has_auth_in_url = bool(st.query_params.get(_AUTH_PARAM, ""))
+    with st.expander("🔍 Diagnostic (utile pour debug PWA iPhone)", expanded=False):
+        st.caption("URL actuelle détectée par le serveur :")
+        st.code(current_url, language=None)
+        if has_auth_in_url:
+            st.warning("Token présent dans l'URL mais invalide (expiré ou corrompu).")
+        else:
+            st.info(
+                "**Pas de token dans l'URL.** Si tu viens de relancer une PWA bookmarkée, "
+                "ça signifie que iOS / Streamlit a écrasé l'URL d'origine. "
+                "Le storage local n'a pas non plus de token valide. → re-login obligatoire."
+            )
+
     col, _ = st.columns([1, 2])
     with col:
         with st.form("login_form"):
