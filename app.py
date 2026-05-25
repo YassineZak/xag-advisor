@@ -79,15 +79,63 @@ if not st.session_state["authenticated"]:
                     st.error("Mot de passe incorrect.")
     st.stop()
 
+# ── Helpers : construction de l'URL d'auth complète ──────────────────────────
+
+def _build_authed_url() -> str:
+    """Reconstruit l'URL complète avec le token courant (pour bookmark PWA)."""
+    token = st.query_params.get(_AUTH_PARAM, "")
+    # Essaie de récupérer l'host depuis le contexte ; fallback Streamlit Cloud
+    host = "xag-advisor.streamlit.app"
+    try:
+        ctx_host = st.context.headers.get("Host", "")
+        if ctx_host:
+            host = ctx_host
+    except Exception:
+        pass
+    return f"https://{host}/?{_AUTH_PARAM}={token}"
+
+
+def _render_pwa_install_block():
+    """Affiche les instructions de (ré)installation de la PWA iPhone."""
+    full_url = _build_authed_url()
+    st.markdown("### 📱 Pour rester connecté sur la PWA iPhone")
+    st.markdown(
+        "**Pourquoi tu dois faire ça ?** iOS fige l'URL de la PWA au moment de "
+        "l'installation. Si tu installes la PWA AVANT de te connecter (ou si tu "
+        "te connectes dans l'app), le bookmark pointe sur l'URL **sans token** → "
+        "à chaque kill, tu retombes sur l'écran de login. "
+        "Il faut donc réinstaller la PWA depuis Safari APRÈS être connecté."
+    )
+    st.markdown("**Étapes (1 minute) :**")
+    st.markdown(
+        "1. **Désinstalle l'actuelle PWA** : long-press l'icône sur ton écran "
+        "d'accueil → *Retirer l'app* → *Supprimer du dock*\n"
+        "2. **Tap le bouton bleu ci-dessous** pour ouvrir l'URL d'auth dans Safari :"
+    )
+    st.markdown(
+        f'<a href="{full_url}" target="_blank" rel="noopener" '
+        f'style="display:inline-block;background:#3b82f6;color:white;padding:12px 24px;'
+        f'border-radius:8px;text-decoration:none;font-weight:600;margin:8px 0;'
+        f'font-size:0.95rem">🌐 Ouvrir dans Safari</a>',
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Ou copie cette URL et colle-la dans Safari manuellement :"
+    )
+    st.code(full_url, language=None)
+    st.markdown(
+        "3. **Dans Safari**, vérifie que l'URL contient bien `?auth=...`\n"
+        "4. Tap **Partager** (carré avec flèche ↑ en bas de l'écran) → "
+        "scroll → **Sur l'écran d'accueil** → **Ajouter** (en haut à droite)\n"
+        "5. C'est fini — la nouvelle PWA reste connectée 1 an, même au force-quit."
+    )
+
+
 # ── Banner post-login : instructions PWA iOS ─────────────────────────────────
 if st.session_state.pop("just_logged_in", False):
-    st.success(
-        "✅ **Connecté pour 1 an.** "
-        "📱 *Sur iPhone* : si la PWA te redemande le mot de passe au force-quit, "
-        "désinstalle-la (long-press → Retirer) et ré-ajoute-la **maintenant** depuis Safari "
-        "(Partager → Sur l'écran d'accueil). L'URL bookmarkée contiendra le token et tu "
-        "resteras connecté pendant 1 an."
-    )
+    st.success("✅ Connecté pour 1 an !")
+    with st.container(border=True):
+        _render_pwa_install_block()
 
 # ── Header portfolio ─────────────────────────────────────────────────────────
 
@@ -192,16 +240,13 @@ with tab2:
 with tab3:
     etf_pea_tab.render()
 
-# ── Pied de page : déconnexion ────────────────────────────────────────────────
+# ── Pied de page : déconnexion + procédure PWA ──────────────────────────────
 st.markdown("<br>", unsafe_allow_html=True)
-with st.expander("⚙️ Compte", expanded=False):
+with st.expander("⚙️ Compte & installation PWA", expanded=False):
     st.markdown("**Session valide 1 an** depuis le dernier login.")
-    st.markdown(
-        "📱 **Pour la PWA iPhone** : ton token de session est dans l'URL. "
-        "Si tu installes la PWA APRÈS login, l'URL bookmarkée contient le token → "
-        "la PWA reste connectée même après force-quit, pendant 1 an. "
-        "Réinstalle la PWA depuis Safari à chaque renouvellement de session."
-    )
+    st.divider()
+    _render_pwa_install_block()
+    st.divider()
     if st.button("🚪 Se déconnecter", key="logout_btn"):
         st.query_params.clear()
         st.session_state["authenticated"] = False
