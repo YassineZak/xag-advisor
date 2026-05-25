@@ -2,12 +2,14 @@ import hmac
 import hashlib
 import time
 import streamlit as st
+import streamlit.components.v1 as components
 import xag_tab
 import btc_tab
 import etf_pea_tab
 
-SESSION_HOURS = 8
+SESSION_HOURS = 30 * 24  # 30 jours — la session reste valide longtemps en PWA
 _AUTH_PARAM   = "auth"
+_STORAGE_KEY  = "xag_auth_v1"
 
 st.set_page_config(
     page_title="Portfolio Advisor",
@@ -26,7 +28,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Auth via query param (fonctionne sur tous navigateurs dont Safari iOS) ────
+# ── Auth via query param + localStorage (PWA-friendly) ────────────────────────
 
 def _sign(ts: int) -> str:
     pw  = st.secrets.get("APP_PASSWORD", "").encode()
@@ -49,6 +51,51 @@ def _check_auth() -> bool:
 def _set_auth():
     ts = int(time.time())
     st.query_params[_AUTH_PARAM] = f"{_sign(ts)}.{ts}"
+
+def _inject_auth_restore_js():
+    """
+    Au chargement de la page, si l'URL n'a pas de token auth mais que
+    localStorage en contient un valide, redirige avec ce token.
+    Permet à la PWA iOS de rester authentifiée même si le bookmark
+    pointe sur une URL sans paramètres.
+    """
+    components.html(f"""
+    <script>
+    (function() {{
+      try {{
+        const win = window.parent || window.top;
+        const loc = win.location;
+        const params = new URLSearchParams(loc.search);
+        const urlAuth = params.get('{_AUTH_PARAM}');
+        const MAX_AGE_MS = {SESSION_HOURS} * 3600 * 1000;
+
+        const isValid = (t) => {{
+          if (!t || !t.includes('.')) return false;
+          const ts = parseInt(t.split('.').pop()) * 1000;
+          return !isNaN(ts) && (Date.now() - ts) < MAX_AGE_MS;
+        }};
+
+        if (urlAuth && isValid(urlAuth)) {{
+          // Token frais dans l'URL → on le sauvegarde pour les prochaines visites
+          localStorage.setItem('{_STORAGE_KEY}', urlAuth);
+        }} else if (!urlAuth) {{
+          // Pas de token dans l'URL → on tente de restaurer depuis localStorage
+          const stored = localStorage.getItem('{_STORAGE_KEY}');
+          if (stored && isValid(stored)) {{
+            params.set('{_AUTH_PARAM}', stored);
+            loc.replace(loc.origin + loc.pathname + '?' + params.toString());
+          }} else if (stored) {{
+            // Stocké mais expiré → on nettoie
+            localStorage.removeItem('{_STORAGE_KEY}');
+          }}
+        }}
+      }} catch (e) {{ /* CORS ou autre — fallback silencieux sur saisie manuelle */ }}
+    }})();
+    </script>
+    """, height=0)
+
+# Injection au plus tôt pour minimiser le flash de l'écran de login
+_inject_auth_restore_js()
 
 # ── Authentification ──────────────────────────────────────────────────────────
 
@@ -158,7 +205,7 @@ st.markdown(f"""
             display:flex;gap:16px;align-items:center;flex-wrap:wrap;font-size:0.88rem;line-height:1.8">
   <span style="color:#64748b;font-weight:700;font-size:0.72rem;letter-spacing:.1em;text-transform:uppercase">Portefeuille</span>
   {_body}
-  <span style="color:#475569;font-size:0.65rem;margin-left:auto">v2.5</span>
+  <span style="color:#475569;font-size:0.65rem;margin-left:auto">v2.6</span>
 </div>
 """, unsafe_allow_html=True)
 
@@ -174,3 +221,18 @@ with tab2:
 
 with tab3:
     etf_pea_tab.render()
+
+# ── Pied de page : déconnexion ────────────────────────────────────────────────
+st.markdown("<br>", unsafe_allow_html=True)
+with st.expander("⚙️ Compte", expanded=False):
+    if st.button("🚪 Se déconnecter", key="logout_btn"):
+        components.html(f"""
+        <script>
+        try {{
+          localStorage.removeItem('{_STORAGE_KEY}');
+          const win = window.parent || window.top;
+          win.location.replace(win.location.origin + win.location.pathname);
+        }} catch (e) {{}}
+        </script>
+        """, height=0)
+        st.info("Déconnexion en cours…")
