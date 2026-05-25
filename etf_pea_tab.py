@@ -264,6 +264,297 @@ Réponds UNIQUEMENT avec le JSON brut, sans markdown ni balises de code."""
         "score_macro":  50,
     }
 
+
+# ─── Portefeuille Trade Republic (import via screenshot) ─────────────────────
+
+_TR_PORTFOLIO_FILE = "tr_portfolio.json"
+_TR_REPO = "YassineZak/xag-advisor"
+
+
+def parse_tr_statement(image_bytes: bytes, mime_type: str = "image/png") -> dict | None:
+    """
+    Parse une capture d'écran de relevé Trade Republic ("Valeur nette" /
+    "État du patrimoine net") via Gemini Vision.
+    Retourne {date, cash_eur, holdings: [...]} ou None.
+    """
+    api_key = st.secrets.get("GOOGLE_API_KEY", "")
+    if not api_key:
+        st.error("Clé GOOGLE_API_KEY manquante dans les secrets Streamlit.")
+        return None
+
+    prompt = """Tu es un analyste financier. Cette image est une capture d'écran d'un relevé "Valeur nette" / "État du patrimoine net" de Trade Republic.
+
+Extrais les données au format JSON STRICT (réponds UNIQUEMENT avec le JSON brut, sans markdown, sans commentaire) :
+
+{
+  "date": "YYYY-MM-DD",
+  "cash_eur": 0.00,
+  "holdings": [
+    {
+      "isin": "FR...",
+      "name": "Nom du titre tel qu'affiché",
+      "qty": 0,
+      "snapshot_price": 0.00,
+      "snapshot_value": 0.00,
+      "yf_ticker": "..."
+    }
+  ]
+}
+
+Règles :
+- "cash_eur" = solde Espèces / Compte courant en EUR
+- "qty" = nombre de pièces / parts détenues
+- "snapshot_price" = prix par pièce affiché à droite (EUR)
+- "snapshot_value" = valeur EUR totale affichée pour la ligne
+- "yf_ticker" = ticker Yahoo Finance pour le pricing live. Mappings connus :
+    * Amundi PEA Monde MSCI World UCITS ETF Acc (ISIN FR001400U5Q4) → "WPEA.PA"
+    * Amundi Stoxx Europe 600 PEA UCITS ETF Acc (ISIN FR0011550193) → "C6E.PA"
+    * Amundi PEA S&P 500 UCITS ETF Acc (ISIN FR0011871128) → "PE500.PA"
+    * Amundi PEA NASDAQ-100 UCITS ETF Acc → "PANX.PA"
+    * Amundi PEA MSCI Emerging Markets → "PAEEM.PA"
+    Sinon déduis-le du nom et de la zone (Euronext Paris, suffixe .PA). Si vraiment incertain, mets null.
+
+N'invente pas de positions, n'extrais que ce qui est lisible."""
+
+    try:
+        from google.genai import types
+        client = _gemini.Client(api_key=api_key)
+        img_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+
+        for model in _GEMINI_MODELS:
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=[img_part, prompt],
+                )
+                text = (response.text or "").strip()
+                if "```" in text:
+                    text = text.split("```")[1]
+                    if text.startswith("json"):
+                        text = text[4:]
+                    text = text.split("```")[0]
+                return json.loads(text.strip())
+            except Exception as e:
+                err = str(e)
+                if any(x in err for x in ("404", "NOT_FOUND", "503", "UNAVAILABLE", "overloaded")):
+                    continue
+                st.error(f"Erreur Gemini ({model}) : {e}")
+                return None
+    except Exception as e:
+        st.error(f"Erreur d'analyse : {e}")
+        return None
+
+    return None
+
+
+@st.cache_data(ttl=300)
+def load_tr_portfolio() -> dict:
+    """Charge tr_portfolio.json depuis GitHub. Cache 5 min."""
+    try:
+        from github import Github
+        token = st.secrets.get("GITHUB_TOKEN", "")
+        if not token:
+            return {"cash_eur": 0.0, "holdings": [], "last_updated": None}
+        g = Github(token)
+        repo = g.get_repo(_TR_REPO)
+        f = repo.get_contents(_TR_PORTFOLIO_FILE)
+        return json.loads(f.decoded_content)
+    except Exception:
+        return {"cash_eur": 0.0, "holdings": [], "last_updated": None}
+
+
+def save_tr_portfolio(data: dict) -> bool:
+    """Écrit tr_portfolio.json sur GitHub (create ou update)."""
+    try:
+        from github import Github
+        token = st.secrets.get("GITHUB_TOKEN", "")
+        if not token:
+            st.error("GITHUB_TOKEN manquant dans les secrets.")
+            return False
+        g = Github(token)
+        repo = g.get_repo(_TR_REPO)
+        content = json.dumps(data, indent=2, ensure_ascii=False)
+        try:
+            f = repo.get_contents(_TR_PORTFOLIO_FILE)
+            repo.update_file(_TR_PORTFOLIO_FILE, "Update Trade Republic portfolio", content, f.sha)
+        except Exception:
+            repo.create_file(_TR_PORTFOLIO_FILE, "Create Trade Republic portfolio", content)
+        return True
+    except Exception as e:
+        st.error(f"Erreur GitHub : {e}")
+        return False
+
+
+@st.cache_data(ttl=300)
+def _get_tr_live_prices(tickers: tuple) -> dict:
+    """Récupère les prix EUR live via yfinance. Cache 5 min."""
+    prices = {}
+    for t in tickers:
+        if not t:
+            continue
+        try:
+            p = yf.Ticker(t).fast_info.last_price
+            if p and p > 0:
+                prices[t] = float(p)
+        except Exception:
+            pass
+    return prices
+
+
+def get_tr_live_value() -> dict:
+    """
+    Combine portfolio importé + prix live yfinance.
+    Retourne {cash_eur, savings_eur, total_eur, holdings_detail, last_updated, has_data}.
+    Pour chaque holding : prix live si yf_ticker fonctionne, sinon snapshot.
+    """
+    portfolio = load_tr_portfolio()
+    holdings = portfolio.get("holdings", []) or []
+
+    tickers = tuple(h.get("yf_ticker") for h in holdings if h.get("yf_ticker"))
+    live_prices = _get_tr_live_prices(tickers) if tickers else {}
+
+    detail = []
+    savings = 0.0
+    for h in holdings:
+        ticker = h.get("yf_ticker")
+        snap_price = float(h.get("snapshot_price", 0) or 0)
+        snap_value = float(h.get("snapshot_value", 0) or 0)
+        qty = float(h.get("qty", 0) or 0)
+
+        live_price = live_prices.get(ticker, 0) if ticker else 0
+        if live_price > 0:
+            value = qty * live_price
+            price = live_price
+            is_live = True
+        else:
+            value = snap_value if snap_value > 0 else qty * snap_price
+            price = snap_price
+            is_live = False
+
+        savings += value
+        detail.append({
+            "isin": h.get("isin", ""),
+            "name": h.get("name", ""),
+            "qty": qty,
+            "price": price,
+            "snapshot_price": snap_price,
+            "value": value,
+            "is_live": is_live,
+            "ticker": ticker or "",
+        })
+
+    cash = float(portfolio.get("cash_eur", 0) or 0)
+    return {
+        "cash_eur": cash,
+        "savings_eur": savings,
+        "total_eur": cash + savings,
+        "holdings_detail": detail,
+        "last_updated": portfolio.get("last_updated"),
+        "imported_at": portfolio.get("imported_at"),
+        "has_data": bool(holdings) or cash > 0,
+    }
+
+
+def _render_tr_portfolio() -> None:
+    """Bloc UI : balances Trade Republic + uploader de relevé."""
+    st.markdown("## 💼 Mon portefeuille Trade Republic")
+
+    tr = get_tr_live_value()
+
+    if tr["has_data"]:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("💵 Espèces", f"{tr['cash_eur']:,.2f} €", help="Solde du compte courant Trade Republic")
+        n_live = sum(1 for h in tr["holdings_detail"] if h["is_live"])
+        n_total = len(tr["holdings_detail"])
+        savings_help = (
+            f"Valorisation live ({n_live}/{n_total} positions via yfinance, reste snapshot)"
+            if n_live < n_total else "Valorisation live via yfinance"
+        ) if n_total else "Aucune position importée"
+        c2.metric("📈 Plan d'Épargne", f"{tr['savings_eur']:,.2f} €", help=savings_help)
+        c3.metric("Total Trade Republic", f"{tr['total_eur']:,.2f} €")
+
+        if tr.get("last_updated"):
+            st.caption(f"Dernier relevé importé : **{tr['last_updated']}**")
+
+        if tr["holdings_detail"]:
+            with st.expander("📊 Détail des positions PEA", expanded=True):
+                rows = []
+                for h in tr["holdings_detail"]:
+                    if h["is_live"] and h["snapshot_price"] > 0:
+                        diff_pct = (h["price"] - h["snapshot_price"]) / h["snapshot_price"] * 100
+                        diff_str = f"{diff_pct:+.2f}%"
+                    else:
+                        diff_str = "—"
+                    qty_str = f"{int(h['qty'])}" if abs(h["qty"] - int(h["qty"])) < 1e-6 else f"{h['qty']:.4f}"
+                    rows.append({
+                        "Titre": h["name"],
+                        "ISIN": h["isin"],
+                        "Pièces": qty_str,
+                        "Prix unité (€)": f"{h['price']:.4f}" if h["price"] < 10 else f"{h['price']:.2f}",
+                        "Valeur (€)": f"{h['value']:,.2f}",
+                        "Δ depuis relevé": diff_str,
+                        "Source": "🟢 Live" if h["is_live"] else "📸 Snapshot",
+                    })
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("Aucun relevé Trade Republic importé. Charge une capture d'écran ci-dessous pour démarrer.")
+
+    with st.expander("📤 Importer un nouveau relevé Trade Republic", expanded=not tr["has_data"]):
+        st.caption(
+            "Dans l'app Trade Republic, ouvre **Profil → Valeur nette / État du patrimoine net**, "
+            "fais une capture d'écran et upload-la ci-dessous. Gemini Vision extraira "
+            "automatiquement ton solde Espèces et tes positions PEA."
+        )
+
+        uploaded = st.file_uploader(
+            "Capture d'écran du relevé",
+            type=["png", "jpg", "jpeg", "webp"],
+            key="tr_upload",
+            label_visibility="collapsed",
+        )
+
+        if uploaded is not None:
+            col_img, col_action = st.columns([1, 1])
+            with col_img:
+                st.image(uploaded, caption="Aperçu", use_container_width=True)
+            with col_action:
+                st.markdown("&nbsp;")
+                if st.button("🔍 Analyser et sauvegarder", type="primary", use_container_width=True, key="tr_parse"):
+                    with st.spinner("Analyse Gemini en cours..."):
+                        image_bytes = uploaded.getvalue()
+                        mime = uploaded.type or "image/png"
+                        parsed = parse_tr_statement(image_bytes, mime)
+
+                    if parsed is None or not isinstance(parsed, dict):
+                        st.error("Échec de l'analyse. Réessaie ou vérifie la lisibilité de l'image.")
+                    else:
+                        payload = {
+                            "last_updated": parsed.get("date") or datetime.now().strftime("%Y-%m-%d"),
+                            "imported_at": datetime.now().isoformat(),
+                            "cash_eur": float(parsed.get("cash_eur", 0) or 0),
+                            "holdings": [
+                                {
+                                    "isin": str(h.get("isin", "")),
+                                    "name": str(h.get("name", "")),
+                                    "qty": float(h.get("qty", 0) or 0),
+                                    "snapshot_price": float(h.get("snapshot_price", 0) or 0),
+                                    "snapshot_value": float(h.get("snapshot_value", 0) or 0),
+                                    "yf_ticker": h.get("yf_ticker") or None,
+                                }
+                                for h in parsed.get("holdings", []) if isinstance(h, dict)
+                            ],
+                        }
+
+                        st.success(f"✅ Analyse réussie — {len(payload['holdings'])} position(s) détectée(s).")
+                        with st.expander("Aperçu du parsing JSON", expanded=False):
+                            st.json(payload)
+
+                        if save_tr_portfolio(payload):
+                            st.success("💾 Sauvegardé sur GitHub. Rechargement…")
+                            st.cache_data.clear()
+                            st.rerun()
+
+
 # ─── Composants UI ───────────────────────────────────────────────────────────
 
 def _perf_html(val: float) -> str:
@@ -335,6 +626,9 @@ def _render_card(item: dict, rank: int, tag_key: str):
 # ─── Point d'entrée ──────────────────────────────────────────────────────────
 
 def render():
+    _render_tr_portfolio()
+    st.divider()
+
     st.markdown("## 📈 ETF & Actions — PEA Long Terme")
 
     with st.spinner("Chargement des indicateurs macro..."):

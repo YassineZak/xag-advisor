@@ -93,7 +93,11 @@ _xag_val  = _xag_qty * _xag_eur if _xag_eur else None
 
 _bp       = btc_tab.get_bitpanda_values()
 _bp_total = _bp["total_eur"]
-_total    = (_xag_val or 0) + _bp_total
+
+_tr       = etf_pea_tab.get_tr_live_value()
+_tr_total = _tr["total_eur"]
+
+_total    = (_xag_val or 0) + _bp_total + _tr_total
 
 _crypto_items_html = []
 for _sym, _info in _bp["holdings"].items():
@@ -113,6 +117,16 @@ for _sym, _info in _bp["holdings"].items():
 _sep         = '<span style="color:#334155">│</span>'
 _crypto_html = f'&nbsp;{_sep}&nbsp;'.join(_crypto_items_html) if _crypto_items_html else '<span style="color:#64748b">—</span>'
 
+_tr_html = ""
+if _tr["has_data"]:
+    _tr_html = (
+        f'{_sep}'
+        f'<span>📈&nbsp;<span style="color:#94a3b8">PEA</span>&nbsp;'
+        f'<b style="color:#22c55e">{_fmt(_tr["savings_eur"])}</b>&nbsp;'
+        f'<span style="color:#64748b">·&nbsp;💵</span>&nbsp;'
+        f'<b style="color:#22c55e">{_fmt(_tr["cash_eur"])}</b></span>'
+    )
+
 st.markdown(f"""
 <div style="background:#1e1e2e;border-radius:10px;padding:10px 20px;margin-bottom:14px;
             display:flex;gap:16px;align-items:center;flex-wrap:wrap;font-size:0.88rem;line-height:1.8">
@@ -122,9 +136,10 @@ st.markdown(f"""
         &nbsp;→&nbsp;<b style="color:#22c55e">{_fmt(_xag_val)}</b>{_pnl_html(_xag_eur, _xag_avg)}</span>
   {_sep}
   {_crypto_html}
+  {_tr_html}
   {_sep}
   <span style="font-weight:700;color:#94a3b8">Total&nbsp;&nbsp;<span style="color:#fbbf24;font-size:0.95rem">{_fmt(_total)}</span></span>
-  <span style="color:#475569;font-size:0.65rem;margin-left:auto">v2.3</span>
+  <span style="color:#475569;font-size:0.65rem;margin-left:auto">v2.4</span>
 </div>
 """, unsafe_allow_html=True)
 
