@@ -401,58 +401,77 @@ def _get_tr_live_prices(tickers: tuple) -> dict:
     return prices
 
 
+def _empty_tr_value() -> dict:
+    return {
+        "cash_eur": 0.0,
+        "savings_eur": 0.0,
+        "total_eur": 0.0,
+        "holdings_detail": [],
+        "last_updated": None,
+        "imported_at": None,
+        "has_data": False,
+    }
+
+
 def get_tr_live_value() -> dict:
     """
-    Combine portfolio importé + prix live yfinance.
-    Retourne {cash_eur, savings_eur, total_eur, holdings_detail, last_updated, has_data}.
-    Pour chaque holding : prix live si yf_ticker fonctionne, sinon snapshot.
+    Combine portfolio importé + prix live yfinance. Garanti de ne jamais lever
+    d'exception : retourne un dict vide si quoi que ce soit échoue.
     """
-    portfolio = load_tr_portfolio()
-    holdings = portfolio.get("holdings", []) or []
+    try:
+        portfolio = load_tr_portfolio() or {}
+        holdings = portfolio.get("holdings", []) or []
 
-    tickers = tuple(h.get("yf_ticker") for h in holdings if h.get("yf_ticker"))
-    live_prices = _get_tr_live_prices(tickers) if tickers else {}
+        tickers = tuple(h.get("yf_ticker") for h in holdings if h.get("yf_ticker"))
+        try:
+            live_prices = _get_tr_live_prices(tickers) if tickers else {}
+        except Exception:
+            live_prices = {}
 
-    detail = []
-    savings = 0.0
-    for h in holdings:
-        ticker = h.get("yf_ticker")
-        snap_price = float(h.get("snapshot_price", 0) or 0)
-        snap_value = float(h.get("snapshot_value", 0) or 0)
-        qty = float(h.get("qty", 0) or 0)
+        detail = []
+        savings = 0.0
+        for h in holdings:
+            if not isinstance(h, dict):
+                continue
+            ticker = h.get("yf_ticker")
+            snap_price = float(h.get("snapshot_price", 0) or 0)
+            snap_value = float(h.get("snapshot_value", 0) or 0)
+            qty = float(h.get("qty", 0) or 0)
 
-        live_price = live_prices.get(ticker, 0) if ticker else 0
-        if live_price > 0:
-            value = qty * live_price
-            price = live_price
-            is_live = True
-        else:
-            value = snap_value if snap_value > 0 else qty * snap_price
-            price = snap_price
-            is_live = False
+            live_price = live_prices.get(ticker, 0) if ticker else 0
+            if live_price > 0:
+                value = qty * live_price
+                price = live_price
+                is_live = True
+            else:
+                value = snap_value if snap_value > 0 else qty * snap_price
+                price = snap_price
+                is_live = False
 
-        savings += value
-        detail.append({
-            "isin": h.get("isin", ""),
-            "name": h.get("name", ""),
-            "qty": qty,
-            "price": price,
-            "snapshot_price": snap_price,
-            "value": value,
-            "is_live": is_live,
-            "ticker": ticker or "",
-        })
+            savings += value
+            detail.append({
+                "isin": h.get("isin", ""),
+                "name": h.get("name", ""),
+                "qty": qty,
+                "price": price,
+                "snapshot_price": snap_price,
+                "value": value,
+                "is_live": is_live,
+                "ticker": ticker or "",
+            })
 
-    cash = float(portfolio.get("cash_eur", 0) or 0)
-    return {
-        "cash_eur": cash,
-        "savings_eur": savings,
-        "total_eur": cash + savings,
-        "holdings_detail": detail,
-        "last_updated": portfolio.get("last_updated"),
-        "imported_at": portfolio.get("imported_at"),
-        "has_data": bool(holdings) or cash > 0,
-    }
+        cash = float(portfolio.get("cash_eur", 0) or 0)
+        return {
+            "cash_eur": cash,
+            "savings_eur": savings,
+            "total_eur": cash + savings,
+            "holdings_detail": detail,
+            "last_updated": portfolio.get("last_updated"),
+            "imported_at": portfolio.get("imported_at"),
+            "has_data": bool(holdings) or cash > 0,
+        }
+    except Exception:
+        return _empty_tr_value()
 
 
 def _render_tr_portfolio() -> None:

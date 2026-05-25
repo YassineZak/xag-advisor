@@ -94,8 +94,11 @@ _xag_val  = _xag_qty * _xag_eur if _xag_eur else None
 _bp       = btc_tab.get_bitpanda_values()
 _bp_total = _bp["total_eur"]
 
-_tr       = etf_pea_tab.get_tr_live_value()
-_tr_total = _tr["total_eur"]
+try:
+    _tr = etf_pea_tab.get_tr_live_value()
+except Exception:
+    _tr = {"cash_eur": 0.0, "savings_eur": 0.0, "total_eur": 0.0, "has_data": False}
+_tr_total = _tr.get("total_eur", 0.0)
 
 _total    = (_xag_val or 0) + _bp_total + _tr_total
 
