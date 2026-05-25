@@ -271,7 +271,7 @@ _TR_PORTFOLIO_FILE = "tr_portfolio.json"
 _TR_REPO = "YassineZak/xag-advisor"
 
 
-def parse_tr_statement(image_bytes: bytes, mime_type: str = "image/png") -> dict | None:
+def parse_tr_statement(image_bytes: bytes, mime_type: str = "image/png"):
     """
     Parse une capture d'écran de relevé Trade Republic ("Valeur nette" /
     "État du patrimoine net") via Gemini Vision.
