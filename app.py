@@ -2,14 +2,14 @@ import hmac
 import hashlib
 import time
 import streamlit as st
-import streamlit.components.v1 as components
+from streamlit_cookies_controller import CookieController
 import xag_tab
 import btc_tab
 import etf_pea_tab
 
-SESSION_HOURS = 30 * 24  # 30 jours — la session reste valide longtemps en PWA
-_AUTH_PARAM   = "auth"
-_STORAGE_KEY  = "xag_auth_v1"
+SESSION_DAYS  = 30
+SESSION_SEC   = SESSION_DAYS * 24 * 3600
+_AUTH_COOKIE  = "xag_auth"
 
 st.set_page_config(
     page_title="Portfolio Advisor",
@@ -28,79 +28,43 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Auth via query param + localStorage (PWA-friendly) ────────────────────────
+# ── Auth via cookie HTTP (persiste sur PWA iOS, même après force-quit) ────────
+
+_cookies = CookieController(key="auth_cookies")
+
 
 def _sign(ts: int) -> str:
     pw  = st.secrets.get("APP_PASSWORD", "").encode()
     msg = f"{ts}:xag-v2".encode()
     return hmac.new(pw, msg, hashlib.sha256).hexdigest()[:24]
 
-def _check_auth() -> bool:
-    val = st.query_params.get(_AUTH_PARAM, "")
-    if not val or "." not in val:
+
+def _make_token() -> str:
+    ts = int(time.time())
+    return f"{_sign(ts)}.{ts}"
+
+
+def _is_token_valid(token: str) -> bool:
+    if not token or "." not in token:
         return False
     try:
-        tok, ts_str = val.rsplit(".", 1)
+        tok, ts_str = token.rsplit(".", 1)
         ts = int(ts_str)
-        if time.time() - ts > SESSION_HOURS * 3600:
+        if time.time() - ts > SESSION_SEC:
             return False
         return hmac.compare_digest(tok, _sign(ts))
     except Exception:
         return False
 
-def _set_auth():
-    ts = int(time.time())
-    st.query_params[_AUTH_PARAM] = f"{_sign(ts)}.{ts}"
 
-def _inject_auth_restore_js():
-    """
-    Au chargement de la page, si l'URL n'a pas de token auth mais que
-    localStorage en contient un valide, redirige avec ce token.
-    Permet à la PWA iOS de rester authentifiée même si le bookmark
-    pointe sur une URL sans paramètres.
-    """
-    components.html(f"""
-    <script>
-    (function() {{
-      try {{
-        const win = window.parent || window.top;
-        const loc = win.location;
-        const params = new URLSearchParams(loc.search);
-        const urlAuth = params.get('{_AUTH_PARAM}');
-        const MAX_AGE_MS = {SESSION_HOURS} * 3600 * 1000;
-
-        const isValid = (t) => {{
-          if (!t || !t.includes('.')) return false;
-          const ts = parseInt(t.split('.').pop()) * 1000;
-          return !isNaN(ts) && (Date.now() - ts) < MAX_AGE_MS;
-        }};
-
-        if (urlAuth && isValid(urlAuth)) {{
-          // Token frais dans l'URL → on le sauvegarde pour les prochaines visites
-          localStorage.setItem('{_STORAGE_KEY}', urlAuth);
-        }} else if (!urlAuth) {{
-          // Pas de token dans l'URL → on tente de restaurer depuis localStorage
-          const stored = localStorage.getItem('{_STORAGE_KEY}');
-          if (stored && isValid(stored)) {{
-            params.set('{_AUTH_PARAM}', stored);
-            loc.replace(loc.origin + loc.pathname + '?' + params.toString());
-          }} else if (stored) {{
-            // Stocké mais expiré → on nettoie
-            localStorage.removeItem('{_STORAGE_KEY}');
-          }}
-        }}
-      }} catch (e) {{ /* CORS ou autre — fallback silencieux sur saisie manuelle */ }}
-    }})();
-    </script>
-    """, height=0)
-
-# Injection au plus tôt pour minimiser le flash de l'écran de login
-_inject_auth_restore_js()
+def _check_auth_from_cookie() -> bool:
+    token = _cookies.get(_AUTH_COOKIE)
+    return _is_token_valid(token) if token else False
 
 # ── Authentification ──────────────────────────────────────────────────────────
 
 if not st.session_state.get("authenticated"):
-    st.session_state["authenticated"] = _check_auth()
+    st.session_state["authenticated"] = _check_auth_from_cookie()
 
 if not st.session_state["authenticated"]:
     st.title("🔒 Portfolio Advisor")
@@ -112,7 +76,14 @@ if not st.session_state["authenticated"]:
             submitted = st.form_submit_button("Se connecter", use_container_width=True)
             if submitted:
                 if password == st.secrets.get("APP_PASSWORD", ""):
-                    _set_auth()
+                    token = _make_token()
+                    _cookies.set(
+                        _AUTH_COOKIE,
+                        token,
+                        max_age=SESSION_SEC,
+                        same_site="lax",
+                        secure=True,
+                    )
                     st.session_state["authenticated"] = True
                     st.rerun()
                 else:
@@ -226,13 +197,6 @@ with tab3:
 st.markdown("<br>", unsafe_allow_html=True)
 with st.expander("⚙️ Compte", expanded=False):
     if st.button("🚪 Se déconnecter", key="logout_btn"):
-        components.html(f"""
-        <script>
-        try {{
-          localStorage.removeItem('{_STORAGE_KEY}');
-          const win = window.parent || window.top;
-          win.location.replace(win.location.origin + win.location.pathname);
-        }} catch (e) {{}}
-        </script>
-        """, height=0)
-        st.info("Déconnexion en cours…")
+        _cookies.remove(_AUTH_COOKIE)
+        st.session_state["authenticated"] = False
+        st.rerun()
