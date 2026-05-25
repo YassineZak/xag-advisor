@@ -295,8 +295,7 @@ Extrais les données au format JSON STRICT (réponds UNIQUEMENT avec le JSON bru
       "name": "Nom du titre tel qu'affiché",
       "qty": 0,
       "snapshot_price": 0.00,
-      "snapshot_value": 0.00,
-      "yf_ticker": "..."
+      "snapshot_value": 0.00
     }
   ]
 }
@@ -306,13 +305,6 @@ Règles :
 - "qty" = nombre de pièces / parts détenues
 - "snapshot_price" = prix par pièce affiché à droite (EUR)
 - "snapshot_value" = valeur EUR totale affichée pour la ligne
-- "yf_ticker" = ticker Yahoo Finance pour le pricing live. Mappings connus :
-    * Amundi PEA Monde MSCI World UCITS ETF Acc (ISIN FR001400U5Q4) → "WPEA.PA"
-    * Amundi Stoxx Europe 600 PEA UCITS ETF Acc (ISIN FR0011550193) → "C6E.PA"
-    * Amundi PEA S&P 500 UCITS ETF Acc (ISIN FR0011871128) → "PE500.PA"
-    * Amundi PEA NASDAQ-100 UCITS ETF Acc → "PANX.PA"
-    * Amundi PEA MSCI Emerging Markets → "PAEEM.PA"
-    Sinon déduis-le du nom et de la zone (Euronext Paris, suffixe .PA). Si vraiment incertain, mets null.
 
 N'invente pas de positions, n'extrais que ce qui est lisible."""
 
@@ -385,22 +377,6 @@ def save_tr_portfolio(data: dict) -> bool:
         return False
 
 
-@st.cache_data(ttl=300)
-def _get_tr_live_prices(tickers: tuple) -> dict:
-    """Récupère les prix EUR live via yfinance. Cache 5 min."""
-    prices = {}
-    for t in tickers:
-        if not t:
-            continue
-        try:
-            p = yf.Ticker(t).fast_info.last_price
-            if p and p > 0:
-                prices[t] = float(p)
-        except Exception:
-            pass
-    return prices
-
-
 def _empty_tr_value() -> dict:
     return {
         "cash_eur": 0.0,
@@ -415,60 +391,31 @@ def _empty_tr_value() -> dict:
 
 def get_tr_live_value() -> dict:
     """
-    Combine portfolio importé + prix live yfinance. Garanti de ne jamais lever
-    d'exception : retourne un dict vide si quoi que ce soit échoue.
+    Retourne la valeur du portefeuille Trade Republic à partir du dernier
+    snapshot importé (screenshot). Pas de pricing live — les valeurs sont
+    figées au moment du dernier upload.
     """
     try:
         portfolio = load_tr_portfolio() or {}
         holdings = portfolio.get("holdings", []) or []
-
-        tickers = tuple(h.get("yf_ticker") for h in holdings if h.get("yf_ticker"))
-        try:
-            live_prices = _get_tr_live_prices(tickers) if tickers else {}
-        except Exception:
-            live_prices = {}
 
         detail = []
         savings = 0.0
         for h in holdings:
             if not isinstance(h, dict):
                 continue
-            ticker = h.get("yf_ticker")
             snap_price = float(h.get("snapshot_price", 0) or 0)
             snap_value = float(h.get("snapshot_value", 0) or 0)
             qty = float(h.get("qty", 0) or 0)
-
-            live_price = live_prices.get(ticker, 0) if ticker else 0
-
-            # Sanity check : si le live diffère de >2× du snapshot, c'est
-            # presque certainement un mauvais ticker (mauvaise share class).
-            live_rejected = False
-            if live_price > 0 and snap_price > 0:
-                ratio = live_price / snap_price
-                if ratio > 2.0 or ratio < 0.5:
-                    live_rejected = True
-                    live_price = 0
-
-            if live_price > 0:
-                value = qty * live_price
-                price = live_price
-                is_live = True
-            else:
-                value = snap_value if snap_value > 0 else qty * snap_price
-                price = snap_price
-                is_live = False
+            value = snap_value if snap_value > 0 else qty * snap_price
 
             savings += value
             detail.append({
                 "isin": h.get("isin", ""),
                 "name": h.get("name", ""),
                 "qty": qty,
-                "price": price,
-                "snapshot_price": snap_price,
+                "price": snap_price,
                 "value": value,
-                "is_live": is_live,
-                "live_rejected": live_rejected,
-                "ticker": ticker or "",
             })
 
         cash = float(portfolio.get("cash_eur", 0) or 0)
@@ -493,91 +440,29 @@ def _render_tr_portfolio() -> None:
 
     if tr["has_data"]:
         c1, c2, c3 = st.columns(3)
-        c1.metric("💵 Espèces", f"{tr['cash_eur']:,.2f} €", help="Solde du compte courant Trade Republic")
-        n_live = sum(1 for h in tr["holdings_detail"] if h["is_live"])
-        n_total = len(tr["holdings_detail"])
-        savings_help = (
-            f"Valorisation live ({n_live}/{n_total} positions via yfinance, reste snapshot)"
-            if n_live < n_total else "Valorisation live via yfinance"
-        ) if n_total else "Aucune position importée"
-        c2.metric("📈 Plan d'Épargne", f"{tr['savings_eur']:,.2f} €", help=savings_help)
+        c1.metric("💵 Espèces", f"{tr['cash_eur']:,.2f} €", help="Solde du compte courant au moment du dernier relevé")
+        c2.metric("📈 Plan d'Épargne", f"{tr['savings_eur']:,.2f} €", help="Valorisation des positions au moment du dernier relevé")
         c3.metric("Total Trade Republic", f"{tr['total_eur']:,.2f} €")
 
         if tr.get("last_updated"):
-            st.caption(f"Dernier relevé importé : **{tr['last_updated']}**")
+            st.caption(
+                f"📸 Valeurs figées au **{tr['last_updated']}**. "
+                f"Upload un nouveau relevé pour rafraîchir."
+            )
 
         if tr["holdings_detail"]:
-            n_rejected = sum(1 for h in tr["holdings_detail"] if h.get("live_rejected"))
-            if n_rejected > 0:
-                st.warning(
-                    f"⚠️ Pour **{n_rejected} position(s)**, le prix live yfinance est trop éloigné "
-                    f"du snapshot Trade Republic (> 2× d'écart) — probablement un mauvais ticker "
-                    f"(mauvaise share class). On utilise le prix du snapshot à la place. "
-                    f"Corrige les tickers manuellement ci-dessous si besoin."
-                )
-
             with st.expander("📊 Détail des positions PEA", expanded=True):
                 rows = []
                 for h in tr["holdings_detail"]:
-                    if h["is_live"] and h["snapshot_price"] > 0:
-                        diff_pct = (h["price"] - h["snapshot_price"]) / h["snapshot_price"] * 100
-                        diff_str = f"{diff_pct:+.2f}%"
-                    else:
-                        diff_str = "—"
                     qty_str = f"{int(h['qty'])}" if abs(h["qty"] - int(h["qty"])) < 1e-6 else f"{h['qty']:.4f}"
-                    if h["is_live"]:
-                        source = "🟢 Live"
-                    elif h.get("live_rejected"):
-                        source = "🟡 Snapshot (ticker KO)"
-                    else:
-                        source = "📸 Snapshot"
                     rows.append({
                         "Titre": h["name"],
                         "ISIN": h["isin"],
-                        "Ticker yf": h.get("ticker") or "—",
                         "Pièces": qty_str,
                         "Prix unité (€)": f"{h['price']:.4f}" if h["price"] < 10 else f"{h['price']:.2f}",
                         "Valeur (€)": f"{h['value']:,.2f}",
-                        "Δ depuis relevé": diff_str,
-                        "Source": source,
                     })
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-            # Édition manuelle des tickers yfinance
-            with st.expander("🔧 Corriger manuellement les tickers yfinance", expanded=False):
-                st.caption(
-                    "Si certaines positions ne s'évaluent pas en live (ticker KO), tu peux saisir "
-                    "le bon ticker Yahoo Finance ici. Vide = pas de live, utilise le snapshot."
-                )
-                portfolio_current = load_tr_portfolio()
-                holdings_current = portfolio_current.get("holdings", []) or []
-
-                with st.form("tr_ticker_edit"):
-                    new_tickers = {}
-                    for idx, h in enumerate(holdings_current):
-                        col1, col2 = st.columns([2, 1])
-                        with col1:
-                            st.text_input(
-                                f"{h.get('name', '')} ({h.get('isin', '')})",
-                                value=str(h.get("yf_ticker") or ""),
-                                key=f"tr_ticker_{idx}",
-                                placeholder="ex: WPEA.PA",
-                            )
-                        with col2:
-                            st.markdown(f"<div style='padding-top:30px;color:#94a3b8;font-size:0.85rem'>Snapshot: {float(h.get('snapshot_price', 0)):.2f} €</div>", unsafe_allow_html=True)
-
-                    submitted = st.form_submit_button("💾 Enregistrer les tickers", use_container_width=True)
-                    if submitted:
-                        updated = dict(portfolio_current)
-                        new_holdings = []
-                        for idx, h in enumerate(holdings_current):
-                            new_t = st.session_state.get(f"tr_ticker_{idx}", "").strip() or None
-                            new_holdings.append({**h, "yf_ticker": new_t})
-                        updated["holdings"] = new_holdings
-                        if save_tr_portfolio(updated):
-                            st.success("Tickers mis à jour.")
-                            st.cache_data.clear()
-                            st.rerun()
     else:
         st.info("Aucun relevé Trade Republic importé. Charge une capture d'écran ci-dessous pour démarrer.")
 
@@ -621,7 +506,6 @@ def _render_tr_portfolio() -> None:
                                     "qty": float(h.get("qty", 0) or 0),
                                     "snapshot_price": float(h.get("snapshot_price", 0) or 0),
                                     "snapshot_value": float(h.get("snapshot_value", 0) or 0),
-                                    "yf_ticker": h.get("yf_ticker") or None,
                                 }
                                 for h in parsed.get("holdings", []) if isinstance(h, dict)
                             ],
