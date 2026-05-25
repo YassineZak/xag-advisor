@@ -1,0 +1,31 @@
+{
+  "last_updated": "2026-05-25",
+  "imported_at": "2026-05-25T20:58:14.709874",
+  "cash_eur": 752.82,
+  "holdings": [
+    {
+      "isin": "FR001400U5Q4",
+      "name": "Pea Monde MSCI World EUR (Acc)",
+      "qty": 19.0,
+      "snapshot_price": 5.97,
+      "snapshot_value": 113.34,
+      "yf_ticker": "WPEA.PA"
+    },
+    {
+      "isin": "FR0011550193",
+      "name": "Stoxx Europe 600 EUR (acc)",
+      "qty": 2.0,
+      "snapshot_price": 20.84,
+      "snapshot_value": 41.68,
+      "yf_ticker": "C6E.PA"
+    },
+    {
+      "isin": "FR0011871128",
+      "name": "PEA S&P 500 EUR (Acc)",
+      "qty": 10.0,
+      "snapshot_price": 56.24,
+      "snapshot_value": 562.4,
+      "yf_ticker": "PE500.PA"
+    }
+  ]
+}
