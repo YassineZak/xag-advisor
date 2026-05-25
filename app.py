@@ -102,47 +102,63 @@ _tr_total = _tr.get("total_eur", 0.0)
 
 _total    = (_xag_val or 0) + _bp_total + _tr_total
 
+_sep = '<span style="color:#334155">│</span>'
+_sections: list[str] = []
+
+# Section XAG (uniquement si on en détient)
+if _xag_qty and _xag_qty > 0:
+    _sections.append(
+        f'<span>🥈&nbsp;<b style="color:#e2e8f0">{_xag_qty:.3f} oz</b>'
+        f'<span style="color:#64748b">&nbsp;·&nbsp;{_fmt(_xag_eur)}/oz</span>'
+        f'&nbsp;→&nbsp;<b style="color:#22c55e">{_fmt(_xag_val)}</b>{_pnl_html(_xag_eur, _xag_avg)}</span>'
+    )
+
+# Cryptos (uniquement celles avec valeur > 0)
 _crypto_items_html = []
 for _sym, _info in _bp["holdings"].items():
-    if _info["type"] == "crypto":
-        _val_str = _fmt(_info["value_eur"]) if _info["value_eur"] > 0 else "—"
+    if _info["type"] == "crypto" and _info["value_eur"] > 0:
         _crypto_items_html.append(
             f'<span><b style="color:#94a3b8">{_sym}</b>&nbsp;'
             f'<b style="color:#e2e8f0">{_info["balance"]:.5f}</b>'
-            f'&nbsp;→&nbsp;<b style="color:#22c55e">{_val_str}</b></span>'
+            f'&nbsp;→&nbsp;<b style="color:#22c55e">{_fmt(_info["value_eur"])}</b></span>'
         )
 for _sym, _info in _bp["holdings"].items():
-    if _info["type"] == "fiat":
+    if _info["type"] == "fiat" and _info["balance"] > 0:
         _crypto_items_html.append(
             f'<span><span style="color:#64748b">{_sym}</span>&nbsp;'
             f'<b style="color:#22c55e">{_info["balance"]:,.2f} €</b></span>'
         )
-_sep         = '<span style="color:#334155">│</span>'
-_crypto_html = f'&nbsp;{_sep}&nbsp;'.join(_crypto_items_html) if _crypto_items_html else '<span style="color:#64748b">—</span>'
+if _crypto_items_html:
+    _sections.append(f'&nbsp;{_sep}&nbsp;'.join(_crypto_items_html))
 
-_tr_html = ""
-if _tr["has_data"]:
-    _tr_html = (
-        f'{_sep}'
-        f'<span>📈&nbsp;<span style="color:#94a3b8">PEA</span>&nbsp;'
-        f'<b style="color:#22c55e">{_fmt(_tr["savings_eur"])}</b>&nbsp;'
-        f'<span style="color:#64748b">·&nbsp;💵</span>&nbsp;'
-        f'<b style="color:#22c55e">{_fmt(_tr["cash_eur"])}</b></span>'
+# Trade Republic (PEA et/ou Espèces, uniquement si > 0)
+_tr_parts = []
+if _tr.get("savings_eur", 0) > 0:
+    _tr_parts.append(
+        f'📈&nbsp;<span style="color:#94a3b8">PEA</span>&nbsp;'
+        f'<b style="color:#22c55e">{_fmt(_tr["savings_eur"])}</b>'
     )
+if _tr.get("cash_eur", 0) > 0:
+    _tr_parts.append(
+        f'💵&nbsp;<b style="color:#22c55e">{_fmt(_tr["cash_eur"])}</b>'
+    )
+if _tr_parts:
+    _sections.append(f'<span>{"&nbsp;·&nbsp;".join(_tr_parts)}</span>')
+
+# Total (toujours affiché)
+_sections.append(
+    f'<span style="font-weight:700;color:#94a3b8">Total&nbsp;&nbsp;'
+    f'<span style="color:#fbbf24;font-size:0.95rem">{_fmt(_total)}</span></span>'
+)
+
+_body = f'&nbsp;{_sep}&nbsp;'.join(_sections) if _sections else '<span style="color:#64748b">Portefeuille vide</span>'
 
 st.markdown(f"""
 <div style="background:#1e1e2e;border-radius:10px;padding:10px 20px;margin-bottom:14px;
             display:flex;gap:16px;align-items:center;flex-wrap:wrap;font-size:0.88rem;line-height:1.8">
   <span style="color:#64748b;font-weight:700;font-size:0.72rem;letter-spacing:.1em;text-transform:uppercase">Portefeuille</span>
-  <span>🥈&nbsp;<b style="color:#e2e8f0">{_xag_qty:.3f} oz</b>
-        <span style="color:#64748b">&nbsp;·&nbsp;{_fmt(_xag_eur)}/oz</span>
-        &nbsp;→&nbsp;<b style="color:#22c55e">{_fmt(_xag_val)}</b>{_pnl_html(_xag_eur, _xag_avg)}</span>
-  {_sep}
-  {_crypto_html}
-  {_tr_html}
-  {_sep}
-  <span style="font-weight:700;color:#94a3b8">Total&nbsp;&nbsp;<span style="color:#fbbf24;font-size:0.95rem">{_fmt(_total)}</span></span>
-  <span style="color:#475569;font-size:0.65rem;margin-left:auto">v2.4</span>
+  {_body}
+  <span style="color:#475569;font-size:0.65rem;margin-left:auto">v2.5</span>
 </div>
 """, unsafe_allow_html=True)
 
