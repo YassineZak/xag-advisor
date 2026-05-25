@@ -2,14 +2,13 @@ import hmac
 import hashlib
 import time
 import streamlit as st
-from streamlit_cookies_controller import CookieController
 import xag_tab
 import btc_tab
 import etf_pea_tab
 
-SESSION_DAYS  = 30
-SESSION_SEC   = SESSION_DAYS * 24 * 3600
-_AUTH_COOKIE  = "xag_auth"
+SESSION_DAYS = 365  # 1 an : la PWA iOS bookmarke l'URL avec le token → tient ~1 an
+SESSION_SEC  = SESSION_DAYS * 24 * 3600
+_AUTH_PARAM  = "auth"
 
 st.set_page_config(
     page_title="Portfolio Advisor",
@@ -28,27 +27,24 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Auth via cookie HTTP (persiste sur PWA iOS, même après force-quit) ────────
-
-_cookies = CookieController(key="auth_cookies")
-
+# ── Auth via query param dans l'URL ──────────────────────────────────────────
+# Pourquoi pas cookies/localStorage ? iOS PWA en mode standalone applique des
+# politiques ITP très strictes : les cookies et localStorage sont souvent purgés
+# au force-quit. Solution la plus fiable : laisser le token dans l'URL — si tu
+# bookmarkes la PWA APRÈS login, l'URL contient le token et la PWA reste
+# connectée tant que le token est valide (1 an par défaut).
 
 def _sign(ts: int) -> str:
     pw  = st.secrets.get("APP_PASSWORD", "").encode()
     msg = f"{ts}:xag-v2".encode()
     return hmac.new(pw, msg, hashlib.sha256).hexdigest()[:24]
 
-
-def _make_token() -> str:
-    ts = int(time.time())
-    return f"{_sign(ts)}.{ts}"
-
-
-def _is_token_valid(token: str) -> bool:
-    if not token or "." not in token:
+def _check_auth() -> bool:
+    val = st.query_params.get(_AUTH_PARAM, "")
+    if not val or "." not in val:
         return False
     try:
-        tok, ts_str = token.rsplit(".", 1)
+        tok, ts_str = val.rsplit(".", 1)
         ts = int(ts_str)
         if time.time() - ts > SESSION_SEC:
             return False
@@ -56,15 +52,14 @@ def _is_token_valid(token: str) -> bool:
     except Exception:
         return False
 
-
-def _check_auth_from_cookie() -> bool:
-    token = _cookies.get(_AUTH_COOKIE)
-    return _is_token_valid(token) if token else False
+def _set_auth():
+    ts = int(time.time())
+    st.query_params[_AUTH_PARAM] = f"{_sign(ts)}.{ts}"
 
 # ── Authentification ──────────────────────────────────────────────────────────
 
 if not st.session_state.get("authenticated"):
-    st.session_state["authenticated"] = _check_auth_from_cookie()
+    st.session_state["authenticated"] = _check_auth()
 
 if not st.session_state["authenticated"]:
     st.title("🔒 Portfolio Advisor")
@@ -76,19 +71,23 @@ if not st.session_state["authenticated"]:
             submitted = st.form_submit_button("Se connecter", use_container_width=True)
             if submitted:
                 if password == st.secrets.get("APP_PASSWORD", ""):
-                    token = _make_token()
-                    _cookies.set(
-                        _AUTH_COOKIE,
-                        token,
-                        max_age=SESSION_SEC,
-                        same_site="lax",
-                        secure=True,
-                    )
+                    _set_auth()
                     st.session_state["authenticated"] = True
+                    st.session_state["just_logged_in"] = True
                     st.rerun()
                 else:
                     st.error("Mot de passe incorrect.")
     st.stop()
+
+# ── Banner post-login : instructions PWA iOS ─────────────────────────────────
+if st.session_state.pop("just_logged_in", False):
+    st.success(
+        "✅ **Connecté pour 1 an.** "
+        "📱 *Sur iPhone* : si la PWA te redemande le mot de passe au force-quit, "
+        "désinstalle-la (long-press → Retirer) et ré-ajoute-la **maintenant** depuis Safari "
+        "(Partager → Sur l'écran d'accueil). L'URL bookmarkée contiendra le token et tu "
+        "resteras connecté pendant 1 an."
+    )
 
 # ── Header portfolio ─────────────────────────────────────────────────────────
 
@@ -196,7 +195,14 @@ with tab3:
 # ── Pied de page : déconnexion ────────────────────────────────────────────────
 st.markdown("<br>", unsafe_allow_html=True)
 with st.expander("⚙️ Compte", expanded=False):
+    st.markdown("**Session valide 1 an** depuis le dernier login.")
+    st.markdown(
+        "📱 **Pour la PWA iPhone** : ton token de session est dans l'URL. "
+        "Si tu installes la PWA APRÈS login, l'URL bookmarkée contient le token → "
+        "la PWA reste connectée même après force-quit, pendant 1 an. "
+        "Réinstalle la PWA depuis Safari à chaque renouvellement de session."
+    )
     if st.button("🚪 Se déconnecter", key="logout_btn"):
-        _cookies.remove(_AUTH_COOKIE)
+        st.query_params.clear()
         st.session_state["authenticated"] = False
         st.rerun()
