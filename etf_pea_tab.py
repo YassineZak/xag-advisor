@@ -271,10 +271,10 @@ _TR_PORTFOLIO_FILE = "tr_portfolio.json"
 _TR_REPO = "YassineZak/xag-advisor"
 
 
-def parse_tr_statement(image_bytes: bytes, mime_type: str = "image/png"):
+def parse_tr_statement(file_bytes: bytes, mime_type: str = "image/png"):
     """
-    Parse une capture d'écran de relevé Trade Republic ("Valeur nette" /
-    "État du patrimoine net") via Gemini Vision.
+    Parse un relevé Trade Republic ("Valeur nette" / "État du patrimoine net")
+    via Gemini : capture d'écran (image) OU relevé PDF (potentiellement multi-pages).
     Retourne {date, cash_eur, holdings: [...]} ou None.
     """
     api_key = st.secrets.get("GOOGLE_API_KEY", "")
@@ -282,7 +282,9 @@ def parse_tr_statement(image_bytes: bytes, mime_type: str = "image/png"):
         st.error("Clé GOOGLE_API_KEY manquante dans les secrets Streamlit.")
         return None
 
-    prompt = """Tu es un analyste financier. Cette image est une capture d'écran d'un relevé "Valeur nette" / "État du patrimoine net" de Trade Republic.
+    prompt = """Tu es un analyste financier. Ce document est un relevé "Valeur nette" / "État du patrimoine net" de Trade Republic (capture d'écran ou PDF pouvant comporter PLUSIEURS pages).
+
+Parcours TOUTES les pages du document et agrège l'ensemble des positions trouvées.
 
 Extrais les données au format JSON STRICT (réponds UNIQUEMENT avec le JSON brut, sans markdown, sans commentaire) :
 
@@ -306,18 +308,18 @@ Règles :
 - "snapshot_price" = prix par pièce affiché à droite (EUR)
 - "snapshot_value" = valeur EUR totale affichée pour la ligne
 
-N'invente pas de positions, n'extrais que ce qui est lisible."""
+N'invente pas de positions, n'extrais que ce qui est lisible. Si une position apparaît sur plusieurs pages, ne la compte qu'une seule fois."""
 
     try:
         from google.genai import types
         client = _gemini.Client(api_key=api_key)
-        img_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+        doc_part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
 
         for model in _GEMINI_MODELS:
             try:
                 response = client.models.generate_content(
                     model=model,
-                    contents=[img_part, prompt],
+                    contents=[doc_part, prompt],
                 )
                 text = (response.text or "").strip()
                 if "```" in text:
@@ -464,33 +466,39 @@ def _render_tr_portfolio() -> None:
                     })
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     else:
-        st.info("Aucun relevé Trade Republic importé. Charge une capture d'écran ci-dessous pour démarrer.")
+        st.info("Aucun relevé Trade Republic importé. Charge une capture d'écran ou un PDF ci-dessous pour démarrer.")
 
     with st.expander("📤 Importer un nouveau relevé Trade Republic", expanded=not tr["has_data"]):
         st.caption(
             "Dans l'app Trade Republic, ouvre **Profil → Valeur nette / État du patrimoine net**, "
-            "fais une capture d'écran et upload-la ci-dessous. Gemini Vision extraira "
-            "automatiquement ton solde Espèces et tes positions PEA."
+            "puis upload ci-dessous une **capture d'écran** ou un **relevé PDF** (les PDF "
+            "multi-pages sont gérés). Gemini extraira automatiquement ton solde Espèces et "
+            "tes positions PEA."
         )
 
         uploaded = st.file_uploader(
-            "Capture d'écran du relevé",
-            type=["png", "jpg", "jpeg", "webp"],
+            "Relevé (image ou PDF)",
+            type=["png", "jpg", "jpeg", "webp", "pdf"],
             key="tr_upload",
             label_visibility="collapsed",
         )
 
         if uploaded is not None:
+            is_pdf = (uploaded.type == "application/pdf") or uploaded.name.lower().endswith(".pdf")
             col_img, col_action = st.columns([1, 1])
             with col_img:
-                st.image(uploaded, caption="Aperçu", use_container_width=True)
+                if is_pdf:
+                    size_kb = len(uploaded.getvalue()) / 1024
+                    st.info(f"📄 **{uploaded.name}**\n\nPDF — {size_kb:,.0f} Ko")
+                else:
+                    st.image(uploaded, caption="Aperçu", use_container_width=True)
             with col_action:
                 st.markdown("&nbsp;")
                 if st.button("🔍 Analyser et sauvegarder", type="primary", use_container_width=True, key="tr_parse"):
                     with st.spinner("Analyse Gemini en cours..."):
-                        image_bytes = uploaded.getvalue()
-                        mime = uploaded.type or "image/png"
-                        parsed = parse_tr_statement(image_bytes, mime)
+                        file_bytes = uploaded.getvalue()
+                        mime = "application/pdf" if is_pdf else (uploaded.type or "image/png")
+                        parsed = parse_tr_statement(file_bytes, mime)
 
                     if parsed is None or not isinstance(parsed, dict):
                         st.error("Échec de l'analyse. Réessaie ou vérifie la lisibilité de l'image.")
