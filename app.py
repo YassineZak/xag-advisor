@@ -263,26 +263,35 @@ def _pnl_html(current, avg):
     sign  = "+" if pct >= 0 else ""
     return f' <span style="color:{color};font-size:0.8rem">({sign}{pct:.1f}%)</span>'
 
-# Silver WisdomTree : parts depuis le relevé Trade Republic × prix live WisdomTree
-_silver = xag_tab.get_silver_holding()
-_silver_price, _ = xag_tab.get_silver_live()
-if _silver_price is None:
-    _sh = xag_tab.get_silver_history()
-    _silver_price = float(_sh.iloc[-1]) if not _sh.empty else 0.0
-_xag_qty = _silver["qty"]
-_xag_avg = _silver["avg_price"]
-_xag_val = _xag_qty * _silver_price if _silver_price else None
-
-_bp       = btc_tab.get_bitpanda_values()
-_bp_total = _bp["total_eur"]
+# Valeurs de repli — le header ne doit jamais faire planter toute la page
+_silver = {"qty": 0.0, "avg_price": 0.0, "snapshot_value": 0.0}
+_silver_price = 0.0
+_xag_qty = _xag_avg = 0.0
+_xag_val = None
+_bp = {"holdings": {}, "total_eur": 0.0}
+_bp_total = 0.0
+_tr_etf = _tr_cash = 0.0
 
 try:
+    # Silver WisdomTree : parts depuis le relevé Trade Republic × prix live WisdomTree
+    _silver = xag_tab.get_silver_holding()
+    _silver_price, _ = xag_tab.get_silver_live()
+    if _silver_price is None:
+        _sh = xag_tab.get_silver_history()
+        _silver_price = float(_sh.iloc[-1]) if not _sh.empty else 0.0
+    _xag_qty = _silver["qty"]
+    _xag_avg = _silver["avg_price"]
+    _xag_val = _xag_qty * _silver_price if _silver_price else None
+
+    _bp       = btc_tab.get_bitpanda_values()
+    _bp_total = _bp["total_eur"]
+
     _tr = etf_pea_tab.get_tr_live_value()
-except Exception:
-    _tr = {"cash_eur": 0.0, "savings_eur": 0.0, "total_eur": 0.0, "has_data": False}
-# ETF/PEA hors silver (le silver est valorisé en live ci-dessus → pas de double comptage)
-_tr_etf  = max(_tr.get("savings_eur", 0.0) - _silver.get("snapshot_value", 0.0), 0.0)
-_tr_cash = _tr.get("cash_eur", 0.0)
+    # ETF/PEA hors silver (le silver est valorisé en live ci-dessus → pas de double comptage)
+    _tr_etf  = max(_tr.get("savings_eur", 0.0) - _silver.get("snapshot_value", 0.0), 0.0)
+    _tr_cash = _tr.get("cash_eur", 0.0)
+except Exception as _e:
+    st.caption(f"⚠️ Résumé du portefeuille temporairement indisponible ({type(_e).__name__}).")
 
 _total    = (_xag_val or 0) + _bp_total + _tr_etf + _tr_cash
 
