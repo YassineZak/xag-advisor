@@ -1,0 +1,7 @@
+[theme]
+# Dark mode forcé en permanence (ignore le réglage système / navigateur)
+base = "dark"
+primaryColor = "#fbbf24"
+backgroundColor = "#0e1117"
+secondaryBackgroundColor = "#1e1e2e"
+textColor = "#e2e8f0"
