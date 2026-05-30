@@ -285,3 +285,61 @@ def render():
         "Sources : Trade Republic (relevé importé), Bitpanda API, Yahoo Finance · "
         "⚠️ Outil d'analyse — pas un conseil financier."
     )
+
+    st.divider()
+    _render_widget_section(snap, series)
+
+
+# ── Widget iPhone (gist secret lu par Scriptable) ─────────────────────────────
+
+def _render_widget_section(snap: dict, series: pd.Series) -> None:
+    """
+    Pousse le récap vers un gist secret (lu par le widget Scriptable iPhone)
+    et affiche l'URL + la procédure d'installation.
+
+    Publication automatique une fois par session (pour éviter une avalanche de
+    révisions de gist à chaque rerun), + bouton pour forcer la mise à jour.
+    """
+    import widget_export
+
+    hist   = xag_tab.get_silver_history()
+    signal = xag_tab.compute_silver_signal(hist, snap.get("silver_price", 0))
+    today  = date.today()
+    v_day, p_day = _variation(series, snap["total"], today - timedelta(days=1))
+
+    with st.expander("📱 Widget iPhone (Scriptable)", expanded=False):
+        if not st.session_state.get("_widget_pushed"):
+            st.session_state["_widget_res"] = widget_export.push_widget(
+                snap, signal, v_day, p_day)
+            st.session_state["_widget_pushed"] = True
+
+        if st.button("🔄 Mettre à jour le widget maintenant", key="widget_push",
+                     use_container_width=True):
+            st.session_state["_widget_res"] = widget_export.push_widget(
+                snap, signal, v_day, p_day)
+
+        res = st.session_state.get("_widget_res", {})
+        if res.get("ok"):
+            st.success("✅ Récap publié dans le gist secret.")
+            st.caption("URL à coller dans le champ `WIDGET_URL` du script Scriptable :")
+            st.code(res["url"], language=None)
+        elif res.get("error"):
+            st.error(f"Échec de publication : {res['error']}")
+            st.caption(
+                "Le plus souvent, ton `GITHUB_TOKEN` n'a pas le scope `gist`. "
+                "Régénère un token GitHub avec la case **gist** cochée et "
+                "remplace-le dans les secrets Streamlit."
+            )
+
+        st.markdown(
+            "**Mise en place (1 fois) :**\n"
+            "1. Installe l'app **Scriptable** (gratuite, App Store).\n"
+            "2. Récupère le script `scriptable_widget.js` du repo, "
+            "colle-le dans un nouveau script Scriptable.\n"
+            "3. Remplace `WIDGET_URL` par l'URL ci-dessus, renomme « Patrimoine ».\n"
+            "4. Écran d'accueil **ou** verrouillage → appui long → **+** → "
+            "**Scriptable** → choisis la taille → édite le widget → "
+            "Script = « Patrimoine ».\n\n"
+            "Le widget se rafraîchit tout seul (cadence gérée par iOS, ~15-30 min). "
+            "Les chiffres reflètent ton dernier passage ici."
+        )
