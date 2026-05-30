@@ -351,7 +351,7 @@ st.markdown(f"""
             display:flex;gap:16px;align-items:center;flex-wrap:wrap;font-size:0.88rem;line-height:1.8">
   <span style="color:#64748b;font-weight:700;font-size:0.72rem;letter-spacing:.1em;text-transform:uppercase">Portefeuille</span>
   {_body}
-  <span style="color:#475569;font-size:0.65rem;margin-left:auto">v3.0</span>
+  <span style="color:#475569;font-size:0.65rem;margin-left:auto">v3.1</span>
 </div>
 """, unsafe_allow_html=True)
 
