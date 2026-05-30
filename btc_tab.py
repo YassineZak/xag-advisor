@@ -3,8 +3,6 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import requests
 from datetime import datetime, date
 
@@ -1068,57 +1066,6 @@ def render():
             c3.metric("Variation 7j",  v_7j,  delta=p_7j)
             c4.metric("Variation 30j", v_30j, delta=p_30j)
 
-            fig_hist = go.Figure()
-            fig_hist.add_trace(go.Scatter(
-                x=history.index, y=history["value_eur"],
-                mode="lines", line=dict(color="#22c55e", width=2.5),
-                fill="tozeroy", fillcolor="rgba(34,197,94,0.08)",
-                name="Valeur portefeuille",
-                hovertemplate="<b>%{x|%d %b %Y}</b><br>Valeur : %{y:,.2f} €<extra></extra>",
-            ))
-            fig_hist.add_trace(go.Scatter(
-                x=history.index, y=history["net_invested_eur"],
-                mode="lines", line=dict(color="#f59e0b", width=1.5, dash="dot"),
-                name="Investi net",
-                hovertemplate="<b>%{x|%d %b %Y}</b><br>Investi : %{y:,.2f} €<extra></extra>",
-            ))
-            fig_hist.update_layout(
-                template="plotly_dark", height=420,
-                legend=dict(orientation="h", y=1.02, xanchor="right", x=1),
-                margin=dict(l=10, r=10, t=10, b=10),
-                hovermode="x unified",
-            )
-            fig_hist.update_yaxes(title_text="EUR")
-            st.plotly_chart(fig_hist, use_container_width=True)
-
-            # Chart P&L cumulé
-            fig_pnl = go.Figure()
-            pnl_pos = history["pnl_eur"].where(history["pnl_eur"] >= 0)
-            pnl_neg = history["pnl_eur"].where(history["pnl_eur"] < 0)
-            fig_pnl.add_trace(go.Scatter(
-                x=history.index, y=pnl_pos,
-                mode="lines", line=dict(color="#22c55e", width=2),
-                fill="tozeroy", fillcolor="rgba(34,197,94,0.15)",
-                name="P&L positif", connectgaps=False,
-                hovertemplate="<b>%{x|%d %b %Y}</b><br>P&L : %{y:+,.2f} €<extra></extra>",
-            ))
-            fig_pnl.add_trace(go.Scatter(
-                x=history.index, y=pnl_neg,
-                mode="lines", line=dict(color="#ef4444", width=2),
-                fill="tozeroy", fillcolor="rgba(239,68,68,0.15)",
-                name="P&L négatif", connectgaps=False,
-                hovertemplate="<b>%{x|%d %b %Y}</b><br>P&L : %{y:+,.2f} €<extra></extra>",
-            ))
-            fig_pnl.add_hline(y=0, line_color="#475569", line_width=1)
-            fig_pnl.update_layout(
-                template="plotly_dark", height=220,
-                showlegend=False,
-                margin=dict(l=10, r=10, t=10, b=10),
-                hovermode="x unified",
-                title=dict(text="P&L quotidien (€)", font=dict(size=14), x=0.01),
-            )
-            st.plotly_chart(fig_pnl, use_container_width=True)
-
     # ── Bloc 2 : Opportunités long terme ─────────────────────────────────────
     st.subheader("🏦 Top 5 — Cryptos sûres (long terme)")
     st.caption("Grandes capitalisations — investissement stable. Classées par score d'achat technique.")
@@ -1224,115 +1171,14 @@ def render():
             "#f97316" if fg_value <= 75 else
             "#ef4444"
         )
-        col_fg, col_fg_chart = st.columns([1, 3])
-        col_fg.markdown(f"""
+        st.markdown(f"""
         <div style="text-align:center; padding:15px; background:#1e1e2e; border-radius:10px;">
             <div style="font-size:2.5rem; font-weight:bold; color:{fg_color};">{fg_value}</div>
             <div style="color:{fg_color}; font-weight:600;">{fg_label}</div>
         </div>
         """, unsafe_allow_html=True)
-
-        if not df_fg.empty:
-            fig_fg = go.Figure()
-            fig_fg.add_trace(go.Scatter(
-                x=df_fg.index, y=df_fg["value"],
-                mode="lines+markers", line=dict(color="#facc15", width=2),
-                fill="tozeroy", fillcolor="rgba(250,204,21,0.1)",
-                name="Fear & Greed"
-            ))
-            fig_fg.add_hline(y=25, line_dash="dash", line_color="#22c55e", annotation_text="Extreme Fear")
-            fig_fg.add_hline(y=75, line_dash="dash", line_color="#ef4444", annotation_text="Extreme Greed")
-            fig_fg.update_layout(
-                template="plotly_dark", height=200,
-                margin=dict(l=0, r=0, t=0, b=0),
-                showlegend=False, yaxis=dict(range=[0, 100]),
-            )
-            col_fg_chart.plotly_chart(fig_fg, use_container_width=True)
     else:
         st.warning("Fear & Greed Index indisponible — API alternative.me inaccessible.")
-
-    st.divider()
-
-    # ── Bloc 4 : Charts techniques ────────────────────────────────────────────
-    st.subheader("📈 Analyse technique BTC — 6 mois")
-    df_6m = df.tail(180).copy()
-
-    fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        row_heights=[0.68, 0.32],
-        vertical_spacing=0.03,
-        subplot_titles=("Prix BTC/EUR + Bollinger + Moyennes mobiles", "RSI (14 jours)"),
-    )
-
-    # Bollinger Bands
-    fig.add_trace(go.Scatter(x=df_6m.index, y=df_6m["BB_upper"], name="BB Upper",
-        line=dict(color="rgba(148,163,184,0.4)", dash="dot", width=1), showlegend=False), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df_6m.index, y=df_6m["BB_lower"], name="BB Lower",
-        line=dict(color="rgba(148,163,184,0.4)", dash="dot", width=1),
-        fill="tonexty", fillcolor="rgba(148,163,184,0.06)", showlegend=False), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df_6m.index, y=df_6m["BB_mid"], name="BB Mid",
-        line=dict(color="rgba(148,163,184,0.3)", width=1), showlegend=False), row=1, col=1)
-    # SMAs
-    fig.add_trace(go.Scatter(x=df_6m.index, y=df_6m["SMA20"], name="SMA20",
-        line=dict(color="#60a5fa", dash="dot", width=1.5)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df_6m.index, y=df_6m["SMA50"], name="SMA50",
-        line=dict(color="#f59e0b", dash="dot", width=1.5)), row=1, col=1)
-    # Prix
-    fig.add_trace(go.Scatter(x=df_6m.index, y=df_6m["Close"], name="BTC/USD",
-        line=dict(color="#f97316", width=2.5)), row=1, col=1)
-    # RSI
-    fig.add_trace(go.Scatter(x=df_6m.index, y=df_6m["RSI"], name="RSI 14",
-        line=dict(color="#a78bfa", width=1.5)), row=2, col=1)
-    fig.add_hline(y=70, line_dash="dash", line_color="#ef4444", line_width=1, row=2, col=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="#22c55e", line_width=1, row=2, col=1)
-    fig.add_hrect(y0=30, y1=70, fillcolor="rgba(255,255,255,0.03)", row=2, col=1)
-
-    fig.update_layout(
-        template="plotly_dark", height=500,
-        legend=dict(orientation="h", y=1.02, xanchor="right", x=1),
-        margin=dict(l=10, r=10, t=40, b=10),
-    )
-    fig.update_yaxes(title_text="USD", row=1, col=1)
-    fig.update_yaxes(title_text="RSI", row=2, col=1, range=[0, 100])
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.divider()
-
-    # ── Bloc 5 : Évolution du portefeuille ────────────────────────────────────
-    if btc_balance > 0 and btc_avg_price > 0:
-        st.subheader("💼 Évolution du portefeuille BTC")
-        try:
-            eur_usd_hist = yf.Ticker("EURUSD=X").history(period="400d")["Close"]
-            eur_usd_hist.index = eur_usd_hist.index.tz_localize(None)
-            df_port = df[["Close"]].join(eur_usd_hist.rename("EUR_USD"), how="left")
-            df_port["EUR_USD"] = df_port["EUR_USD"].ffill().fillna(1.08)
-            df_port["Close_EUR"] = df_port["Close"] / df_port["EUR_USD"]
-        except Exception:
-            df_port = df.copy()
-            df_port["Close_EUR"] = df_port["Close"] / 1.08
-
-        df_port["value_eur"] = df_port["Close_EUR"] * btc_balance
-        purchase_value = btc_avg_price * btc_balance
-
-        fig_port = go.Figure()
-        fig_port.add_hline(
-            y=purchase_value,
-            line_dash="dash", line_color="#f59e0b",
-            annotation_text=f"Prix moyen {btc_avg_price:,.0f} €",
-            annotation_position="bottom right",
-        )
-        fig_port.add_trace(go.Scatter(
-            x=df_port.index, y=df_port["value_eur"],
-            mode="lines", line=dict(color="#f97316", width=2),
-            fill="tozeroy", fillcolor="rgba(249,115,22,0.08)",
-            name="Valeur portefeuille BTC (€)"
-        ))
-        fig_port.update_layout(
-            template="plotly_dark", height=300,
-            margin=dict(l=10, r=10, t=10, b=10),
-        )
-        st.plotly_chart(fig_port, use_container_width=True)
 
     st.divider()
 

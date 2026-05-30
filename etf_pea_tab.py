@@ -4,7 +4,6 @@ from google import genai as _gemini
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
 # ─── Univers d'actifs ────────────────────────────────────────────────────────
@@ -191,9 +190,6 @@ def get_asset_signals(universe_key: str) -> list:
             perf_3m  = float((close.iloc[-1] / close.iloc[-63]  - 1) * 100) if len(close) > 63  else 0.0
             perf_6m  = float((close.iloc[-1] / close.iloc[-126] - 1) * 100) if len(close) > 126 else 0.0
 
-            chart_df = close.tail(180).reset_index()
-            chart_df.columns = ["Date", "Close"]
-
             signals.append({
                 **item,
                 "price":   price,
@@ -205,7 +201,6 @@ def get_asset_signals(universe_key: str) -> list:
                 "perf_1m": perf_1m,
                 "perf_3m": perf_3m,
                 "perf_6m": perf_6m,
-                "chart":   chart_df,
             })
         except Exception:
             continue
@@ -573,29 +568,6 @@ def _render_card(item: dict, rank: int, tag_key: str):
     c2.metric("RSI 14j", f"{item['rsi']:.0f}")
     c3.markdown(f"**Perf 1M**<br>{_perf_html(item['perf_1m'])}", unsafe_allow_html=True)
     c4.markdown(f"**Perf 3M**<br>{_perf_html(item['perf_3m'])}", unsafe_allow_html=True)
-
-    if "chart" in item and not item["chart"].empty:
-        fig = go.Figure(go.Scatter(
-            x=item["chart"]["Date"],
-            y=item["chart"]["Close"],
-            mode="lines",
-            line=dict(color=item["color"], width=1.8),
-            fill="tozeroy",
-            fillcolor="rgba({},{},{},0.13)".format(
-                int(item["color"][1:3], 16),
-                int(item["color"][3:5], 16),
-                int(item["color"][5:7], 16),
-            ),
-        ))
-        fig.update_layout(
-            height=100,
-            margin=dict(l=0, r=0, t=0, b=0),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            xaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
-            yaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
-        )
-        st.plotly_chart(fig, use_container_width=True)
 
 # ─── Point d'entrée ──────────────────────────────────────────────────────────
 

@@ -6,6 +6,7 @@ import streamlit.components.v1 as components
 import xag_tab
 import btc_tab
 import etf_pea_tab
+import dashboard_tab
 
 SESSION_DAYS = 365  # 1 an
 SESSION_SEC  = SESSION_DAYS * 24 * 3600
@@ -262,11 +263,15 @@ def _pnl_html(current, avg):
     sign  = "+" if pct >= 0 else ""
     return f' <span style="color:{color};font-size:0.8rem">({sign}{pct:.1f}%)</span>'
 
-_portfolio        = xag_tab.load_portfolio()
-_xag_eur, _, _, _ = xag_tab.get_live_price()
-_xag_qty  = _portfolio.get("quantity", 0.0)
-_xag_avg  = _portfolio.get("avg_price", 0.0)
-_xag_val  = _xag_qty * _xag_eur if _xag_eur else None
+# Silver WisdomTree : parts depuis le relevé Trade Republic × prix live WisdomTree
+_silver = xag_tab.get_silver_holding()
+_silver_price, _ = xag_tab.get_silver_live()
+if _silver_price is None:
+    _sh = xag_tab.get_silver_history()
+    _silver_price = float(_sh.iloc[-1]) if not _sh.empty else 0.0
+_xag_qty = _silver["qty"]
+_xag_avg = _silver["avg_price"]
+_xag_val = _xag_qty * _silver_price if _silver_price else None
 
 _bp       = btc_tab.get_bitpanda_values()
 _bp_total = _bp["total_eur"]
@@ -275,19 +280,21 @@ try:
     _tr = etf_pea_tab.get_tr_live_value()
 except Exception:
     _tr = {"cash_eur": 0.0, "savings_eur": 0.0, "total_eur": 0.0, "has_data": False}
-_tr_total = _tr.get("total_eur", 0.0)
+# ETF/PEA hors silver (le silver est valorisé en live ci-dessus → pas de double comptage)
+_tr_etf  = max(_tr.get("savings_eur", 0.0) - _silver.get("snapshot_value", 0.0), 0.0)
+_tr_cash = _tr.get("cash_eur", 0.0)
 
-_total    = (_xag_val or 0) + _bp_total + _tr_total
+_total    = (_xag_val or 0) + _bp_total + _tr_etf + _tr_cash
 
 _sep = '<span style="color:#334155">│</span>'
 _sections: list[str] = []
 
-# Section XAG (uniquement si on en détient)
+# Section Silver WisdomTree (uniquement si on en détient)
 if _xag_qty and _xag_qty > 0:
     _sections.append(
-        f'<span>🥈&nbsp;<b style="color:#e2e8f0">{_xag_qty:.3f} oz</b>'
-        f'<span style="color:#64748b">&nbsp;·&nbsp;{_fmt(_xag_eur)}/oz</span>'
-        f'&nbsp;→&nbsp;<b style="color:#22c55e">{_fmt(_xag_val)}</b>{_pnl_html(_xag_eur, _xag_avg)}</span>'
+        f'<span>🥈&nbsp;<b style="color:#e2e8f0">{_xag_qty:g} parts</b>'
+        f'<span style="color:#64748b">&nbsp;·&nbsp;{_fmt(_silver_price)}/part</span>'
+        f'&nbsp;→&nbsp;<b style="color:#22c55e">{_fmt(_xag_val)}</b>{_pnl_html(_silver_price, _xag_avg)}</span>'
     )
 
 # Cryptos (uniquement celles avec valeur > 0)
@@ -308,16 +315,16 @@ for _sym, _info in _bp["holdings"].items():
 if _crypto_items_html:
     _sections.append(f'&nbsp;{_sep}&nbsp;'.join(_crypto_items_html))
 
-# Trade Republic (PEA et/ou Espèces, uniquement si > 0)
+# Trade Republic (PEA hors silver et/ou Espèces, uniquement si > 0)
 _tr_parts = []
-if _tr.get("savings_eur", 0) > 0:
+if _tr_etf > 0:
     _tr_parts.append(
         f'📈&nbsp;<span style="color:#94a3b8">PEA</span>&nbsp;'
-        f'<b style="color:#22c55e">{_fmt(_tr["savings_eur"])}</b>'
+        f'<b style="color:#22c55e">{_fmt(_tr_etf)}</b>'
     )
-if _tr.get("cash_eur", 0) > 0:
+if _tr_cash > 0:
     _tr_parts.append(
-        f'💵&nbsp;<b style="color:#22c55e">{_fmt(_tr["cash_eur"])}</b>'
+        f'💵&nbsp;<b style="color:#22c55e">{_fmt(_tr_cash)}</b>'
     )
 if _tr_parts:
     _sections.append(f'<span>{"&nbsp;·&nbsp;".join(_tr_parts)}</span>')
@@ -335,13 +342,16 @@ st.markdown(f"""
             display:flex;gap:16px;align-items:center;flex-wrap:wrap;font-size:0.88rem;line-height:1.8">
   <span style="color:#64748b;font-weight:700;font-size:0.72rem;letter-spacing:.1em;text-transform:uppercase">Portefeuille</span>
   {_body}
-  <span style="color:#475569;font-size:0.65rem;margin-left:auto">v2.6</span>
+  <span style="color:#475569;font-size:0.65rem;margin-left:auto">v3.0</span>
 </div>
 """, unsafe_allow_html=True)
 
 # ── App principale ────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3 = st.tabs(["🥈 Métaux", "₿ Cryptos", "📈 ETF & Actions PEA"])
+tab0, tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "🥈 Silver", "₿ Cryptos", "📈 ETF & Actions PEA"])
+
+with tab0:
+    dashboard_tab.render()
 
 with tab1:
     xag_tab.render()
