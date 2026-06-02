@@ -904,15 +904,23 @@ def render():
         all_holdings[symbol] = {"balance": balance, "value_eur": balance * price, "type": "crypto"}
 
     if all_holdings:
-        cols = st.columns(min(len(all_holdings) + 1, 4))
-        cols[0].metric("Total portfolio", f"{total_eur:,.2f} €")
-        for i, (symbol, info) in enumerate(all_holdings.items(), start=1):
-            col = cols[i % 4] if len(all_holdings) >= 3 else cols[i]
-            if info["type"] == "fiat":
-                cols[i].metric(f"{symbol}", f"{info['balance']:,.2f} €")
-            else:
-                price_str = f"≈ {info['value_eur']:,.2f} €" if info["value_eur"] > 0 else ""
-                cols[i].metric(f"{symbol}", f"{info['balance']:.6f}", delta=price_str if price_str else None)
+        # Grille en lignes de 4 colonnes : "Total" puis une carte par avoir.
+        # (st.columns crée une rangée fixe → on découpe en rangées pour gérer
+        #  n'importe quel nombre d'avoirs sans IndexError.)
+        PER_ROW = 4
+        items = [("__total__", {"type": "total"})] + list(all_holdings.items())
+        for start in range(0, len(items), PER_ROW):
+            row = items[start:start + PER_ROW]
+            cols = st.columns(len(row))
+            for col, (symbol, info) in zip(cols, row):
+                if info["type"] == "total":
+                    col.metric("Total portfolio", f"{total_eur:,.2f} €")
+                elif info["type"] == "fiat":
+                    col.metric(f"{symbol}", f"{info['balance']:,.2f} €")
+                else:
+                    price_str = f"≈ {info['value_eur']:,.2f} €" if info["value_eur"] > 0 else ""
+                    col.metric(f"{symbol}", f"{info['balance']:.6f}",
+                               delta=price_str if price_str else None)
     else:
         st.info("Aucun avoir détecté sur Bitpanda pour l'instant.")
 
