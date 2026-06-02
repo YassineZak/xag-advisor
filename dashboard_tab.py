@@ -41,6 +41,7 @@ def compute_snapshot() -> dict:
     silver_qty = holding["qty"]
     silver_eur = silver_qty * price
     silver_snapshot = holding["snapshot_value"]
+    silver_avg = holding.get("avg_price", 0.0)
 
     # Trade Republic (ETF/PEA + cash), silver exclu pour ne pas le compter 2×
     try:
@@ -64,12 +65,79 @@ def compute_snapshot() -> dict:
         "silver_eur": silver_eur,
         "silver_qty": silver_qty,
         "silver_price": price,
+        "silver_avg": silver_avg,
         "etf_eur": etf_eur,
         "cash_eur": cash_eur,
         "crypto_eur": crypto_eur,
         "crypto_holdings": bp_holdings,
         "total": total,
         "tr": tr,
+    }
+
+
+# ── Plus-value réelle (valeur − argent réellement investi) ────────────────────
+
+def compute_real_pnl(snap: dict) -> dict:
+    """
+    Plus-value réelle = valeur actuelle − argent réellement investi (apports
+    déduits), par classe d'actif et au total.
+
+    Ne compte QUE les classes dont on connaît le coût d'acquisition :
+      • Silver  → parts × prix moyen d'achat saisi
+      • Crypto  → P&L cash-flow Bitpanda (achats/dépôts − ventes/retraits)
+    PEA/ETF et cash sont volontairement exclus : aucun prix d'achat n'est
+    disponible dans les relevés Trade Republic, et le cash n'est pas un gain.
+
+    Retourne {"classes": {clé: {label, invested, value, pnl, pnl_pct}}, "total": {...}}.
+    """
+    classes: dict = {}
+
+    # ── Silver : valeur − (parts × prix moyen) ──
+    silver_qty = float(snap.get("silver_qty", 0) or 0)
+    silver_avg = float(snap.get("silver_avg", 0) or 0)
+    silver_val = float(snap.get("silver_eur", 0) or 0)
+    if silver_qty > 0 and silver_avg > 0:
+        invested = silver_qty * silver_avg
+        classes["silver"] = {
+            "label": "🥈 Silver WisdomTree",
+            "invested": invested,
+            "value": silver_val,
+            "pnl": silver_val - invested,
+            "pnl_pct": (silver_val - invested) / invested * 100 if invested > 0 else 0.0,
+        }
+
+    # ── Crypto : P&L cash-flow déjà calculé dans btc_tab ──
+    holdings = snap.get("crypto_holdings", {})
+    balances = {s: float(i.get("balance", 0) or 0)
+                for s, i in holdings.items() if i.get("type") == "crypto"}
+    prices = {s: float(i.get("price_eur", 0) or 0)
+              for s, i in holdings.items() if i.get("type") == "crypto"}
+    try:
+        trades = btc_tab.get_bitpanda_trades()
+        wallet_txs = btc_tab.get_bitpanda_wallet_txs()
+    except Exception:
+        trades, wallet_txs = [], []
+    if trades or wallet_txs:
+        cp = btc_tab.compute_crypto_pnl(trades, wallet_txs, prices, balances)["total"]
+        classes["crypto"] = {
+            "label": "₿ Crypto Bitpanda",
+            "invested": cp["net_invested"],
+            "value": cp["current_value"],
+            "pnl": cp["pnl"],
+            "pnl_pct": cp["pnl_pct"],
+        }
+
+    tot_inv = sum(c["invested"] for c in classes.values())
+    tot_val = sum(c["value"] for c in classes.values())
+    tot_pnl = sum(c["pnl"] for c in classes.values())
+    return {
+        "classes": classes,
+        "total": {
+            "invested": tot_inv,
+            "value": tot_val,
+            "pnl": tot_pnl,
+            "pnl_pct": (tot_pnl / tot_inv * 100) if tot_inv > 0 else 0.0,
+        },
     }
 
 
@@ -240,16 +308,56 @@ def render():
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Plus-value réelle (valeur − investi) ───────────────────────────────────
+    st.subheader("💰 Plus-value réelle")
+    st.caption(
+        "Ton **vrai gain** = valeur actuelle − argent réellement investi (apports déduits). "
+        "Acheter un actif ou ajouter de l'argent n'augmente donc PAS cette plus-value. "
+        "PEA/ETF et cash sont exclus : pas de prix d'achat connu côté Trade Republic."
+    )
+    pnl = compute_real_pnl(snap)
+    tp  = pnl["total"]
+    if pnl["classes"]:
+        g1, g2, g3 = st.columns(3)
+        g1.metric("Investi net", f"{tp['invested']:,.2f} €",
+                  help="Somme réellement engagée : achats + dépôts − ventes − retraits.")
+        g2.metric("Valeur actuelle", f"{tp['value']:,.2f} €",
+                  help="Valorisation live des actifs suivis (silver + crypto).")
+        g3.metric("Plus-value", f"{tp['pnl']:+,.2f} €", delta=f"{tp['pnl_pct']:+.2f}%",
+                  help="Valeur − investi. C'est ton gain réel, hors argent ajouté.")
+
+        pnl_rows = [
+            {
+                "Classe": c["label"],
+                "Investi (€)": f"{c['invested']:,.2f}",
+                "Valeur (€)": f"{c['value']:,.2f}",
+                "Plus-value (€)": f"{c['pnl']:+,.2f}",
+                "Plus-value (%)": f"{c['pnl_pct']:+.2f}%",
+            }
+            for c in pnl["classes"].values()
+        ]
+        st.dataframe(pd.DataFrame(pnl_rows), use_container_width=True, hide_index=True)
+    else:
+        st.info(
+            "Calcul indisponible : renseigne ton prix moyen d'achat silver "
+            "(onglet 🥈 Silver) et/ou connecte ta clé API Bitpanda pour activer "
+            "la plus-value réelle."
+        )
+
+    st.divider()
+
     # ── Évolution (chiffres) ───────────────────────────────────────────────────
-    st.subheader("📈 Évolution")
+    st.subheader("📈 Évolution du patrimoine")
     e1, e2, e3 = st.columns(3)
     e1.metric("Jour", v_day,  delta=p_day,  help="Variation vs hier.")
     e2.metric("Mois", v_mon,  delta=p_mon,  help="Variation vs il y a ~30 jours.")
     e3.metric("Année", v_year, delta=p_year, help="Variation vs il y a ~1 an.")
     st.caption(
-        "Historique hybride : approximé depuis les prix de marché au démarrage, "
-        "puis fiabilisé par un snapshot réel enregistré chaque jour. "
-        "Les lignes ETF/PEA et cash sont figées à leur dernière valeur de relevé."
+        "⚠️ Variation de la **valeur totale du patrimoine** — apports inclus : "
+        "si tu ajoutes de l'argent ou achètes un actif sur la période, le chiffre monte aussi. "
+        "Pour ton gain réel hors apports, vois « 💰 Plus-value réelle » ci-dessus. "
+        "Historique hybride : approximé depuis les prix de marché, puis fiabilisé par "
+        "un snapshot réel quotidien ; ETF/PEA et cash figés à leur dernier relevé."
     )
 
     # ── Évolution (tableau) ────────────────────────────────────────────────────
