@@ -1,42 +1,6 @@
 {
-  "last_updated": "2026-06-16",
-  "imported_at": "2026-06-16T09:41:48.602402",
-  "cash_eur": 1.79,
-  "holdings": [
-    {
-      "isin": "US84615Q1031",
-      "name": "Space Exploration Techs. Corp. Registered Shares CI.A",
-      "qty": 3.0,
-      "snapshot_price": 182.48,
-      "snapshot_value": 547.44
-    },
-    {
-      "isin": "JEO0B1VS3333",
-      "name": "Physical Silver USD",
-      "qty": 18.0,
-      "snapshot_price": 55.36,
-      "snapshot_value": 996.39
-    },
-    {
-      "isin": "FR001400U5Q4",
-      "name": "Pea Monde MSCI World EUR (Acc)",
-      "qty": 66.0,
-      "snapshot_price": 6.03,
-      "snapshot_value": 398.24
-    },
-    {
-      "isin": "FR0011550193",
-      "name": "Stoxx Europe 600 EUR (acc)",
-      "qty": 2.0,
-      "snapshot_price": 20.97,
-      "snapshot_value": 41.94
-    },
-    {
-      "isin": "FR0011871128",
-      "name": "PEA S&P 500 EUR (Acc)",
-      "qty": 10.0,
-      "snapshot_price": 57.06,
-      "snapshot_value": 570.6
-    }
-  ]
+  "last_updated": "2026-08-11",
+  "imported_at": "2026-08-12T23:24:59.083324",
+  "cash_eur": 0.06,
+  "holdings": []
 }
