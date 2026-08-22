@@ -1,21 +1,42 @@
 {
-  "last_updated": "2023-11-20",
-  "imported_at": "2026-08-22T20:13:05.901005",
-  "cash_eur": 0.0,
+  "last_updated": "2026-08-22",
+  "imported_at": "2026-08-22T20:30:51.701191",
+  "cash_eur": 0.06,
   "holdings": [
     {
-      "isin": "",
+      "isin": "US84615Q1031",
+      "name": "Space Exploration Techs. Corp. Registered Shares CI.A",
+      "qty": 3.0,
+      "snapshot_price": 117.08,
+      "snapshot_value": 351.24
+    },
+    {
+      "isin": "JEOOB1VS3333",
       "name": "Physical Silver USD",
-      "qty": 0.0,
-      "snapshot_price": 0.0,
+      "qty": 21.268685,
+      "snapshot_price": 53.59,
       "snapshot_value": 1139.79
     },
     {
-      "isin": "",
-      "name": "SpaceX",
-      "qty": 0.0,
-      "snapshot_price": 0.0,
-      "snapshot_value": 351.24
+      "isin": "FR001400U5Q4",
+      "name": "Pea Monde MSCI World EUR (Acc)",
+      "qty": 66.0,
+      "snapshot_price": 6.11,
+      "snapshot_value": 403.26
+    },
+    {
+      "isin": "FR0011550193",
+      "name": "Stoxx Europe 600 EUR (acc)",
+      "qty": 2.0,
+      "snapshot_price": 21.53,
+      "snapshot_value": 43.06
+    },
+    {
+      "isin": "FR0011871128",
+      "name": "PEA S&P 500 EUR (Acc)",
+      "qty": 10.0,
+      "snapshot_price": 57.5,
+      "snapshot_value": 575.0
     }
   ]
 }
