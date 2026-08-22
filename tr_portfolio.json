@@ -1,28 +1,21 @@
 {
-  "last_updated": "2026-08-22",
-  "imported_at": "2026-08-22T20:11:59.121135",
+  "last_updated": "2023-11-20",
+  "imported_at": "2026-08-22T20:13:05.901005",
   "cash_eur": 0.0,
   "holdings": [
     {
       "isin": "",
-      "name": "PEA S&P 500 EUR (Acc)",
+      "name": "Physical Silver USD",
       "qty": 0.0,
       "snapshot_price": 0.0,
-      "snapshot_value": 575.2
+      "snapshot_value": 1139.79
     },
     {
       "isin": "",
-      "name": "Pea Monde MSCI World EUR (...)",
+      "name": "SpaceX",
       "qty": 0.0,
       "snapshot_price": 0.0,
-      "snapshot_value": 403.52
-    },
-    {
-      "isin": "",
-      "name": "Stoxx Europe 600 EUR (acc)",
-      "qty": 0.0,
-      "snapshot_price": 0.0,
-      "snapshot_value": 43.06
+      "snapshot_value": 351.24
     }
   ]
 }
