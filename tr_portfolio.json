@@ -1,6 +1,21 @@
 {
-  "last_updated": "2026-08-11",
-  "imported_at": "2026-08-12T23:24:59.083324",
-  "cash_eur": 0.06,
-  "holdings": []
+  "last_updated": "0000-00-00",
+  "imported_at": "2026-08-22T20:10:47.550631",
+  "cash_eur": 0.0,
+  "holdings": [
+    {
+      "isin": "",
+      "name": "Physical Silver USD",
+      "qty": 0.0,
+      "snapshot_price": 0.0,
+      "snapshot_value": 1139.79
+    },
+    {
+      "isin": "",
+      "name": "SpaceX",
+      "qty": 0.0,
+      "snapshot_price": 0.0,
+      "snapshot_value": 351.24
+    }
+  ]
 }
